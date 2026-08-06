@@ -1,0 +1,45 @@
+# ============================================================================
+#  KHÔNG BAO GIỜ commit dữ liệu sự cố
+#  samples/  chứa webshell thật -> push lên là phát tán mã độc, GitHub sẽ khoá repo
+#  reports/  chứa hostname, IP, đường dẫn, danh sách user của server
+# ============================================================================
+samples/*
+!samples/.gitkeep
+reports/*
+!reports/.gitkeep
+
+# output của triage script, bất kể đặt ở đâu
+triage-*.txt
+evidence-*.tar.gz
+*.evidence
+for-analysis/
+ir-*/
+
+# log và dump lấy từ server
+*.log
+access-window*
+metadata.txt
+*.sql
+*.sql.gz
+logs.tar.gz
+
+# mẫu mã độc dù đổi đuôi gì
+*.php.txt
+*.suspected
+*.quarantine
+
+# bí mật
+.env
+*.pem
+*.key
+*.p12
+id_rsa*
+*credentials*
+*secret*
+
+# hệ thống
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*~

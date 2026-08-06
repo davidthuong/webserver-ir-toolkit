@@ -1,0 +1,5 @@
+# Script chạy trên Linux -- bắt buộc LF, không để Windows đổi thành CRLF
+# (CRLF làm bash báo "bad interpreter: /bin/bash^M")
+*.sh    text eol=lf
+*.md    text eol=lf
+.gitignore text eol=lf

@@ -1,0 +1,482 @@
+#!/bin/bash
+# =============================================================================
+#  webshell-triage.sh  --  READ-ONLY triage for compromised web servers
+#  Supports: DirectAdmin, Plesk, cPanel, plain nginx/apache (CentOS/Alma/Ubuntu)
+#
+#  This script NEVER deletes, moves, chmods or edits anything.
+#  It only reads and writes one report file.
+#
+#  Usage:
+#     sudo bash webshell-triage.sh                 # scan auto-detected webroots
+#     sudo bash webshell-triage.sh --days 14       # "recent changes" window
+#     sudo bash webshell-triage.sh --root /home/user1/domains/site.com
+#     sudo bash webshell-triage.sh --out /root/report.txt
+#
+#  If you get "bad interpreter: ^M":  sed -i 's/\r$//' webshell-triage.sh
+# =============================================================================
+
+set -u
+
+DAYS=30
+EXTRA_ROOTS=()
+OUT=""
+MAXHITS=400          # cap lines per section so the report stays readable
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --days)  DAYS="$2"; shift 2 ;;
+    --root)  EXTRA_ROOTS+=("$2"); shift 2 ;;
+    --out)   OUT="$2"; shift 2 ;;
+    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    *) echo "unknown arg: $1"; exit 1 ;;
+  esac
+done
+
+HOST=$(hostname 2>/dev/null || echo unknown)
+STAMP=$(date +%F-%H%M)
+[ -z "$OUT" ] && OUT="/root/triage-${HOST}-${STAMP}.txt"
+touch "$OUT" 2>/dev/null || OUT="./triage-${HOST}-${STAMP}.txt"
+
+if [ "$(id -u)" != "0" ]; then
+  echo "WARNING: not running as root. Many checks will be incomplete."
+fi
+
+log()  { printf '%s\n' "$*" | tee -a "$OUT" ; }
+sec()  { log ""; log "==============================================================="; \
+         log "## $*"; log "==============================================================="; }
+sub()  { log ""; log "-- $* --"; }
+cap()  { head -n "$MAXHITS" ; }
+have() { command -v "$1" >/dev/null 2>&1 ; }
+
+log "webshell-triage.sh  host=$HOST  date=$(date)  window=${DAYS}d"
+log "report: $OUT"
+
+# -----------------------------------------------------------------------------
+sec "1. SYSTEM INFO"
+log "uname:   $(uname -a 2>/dev/null)"
+log "os:      $(cat /etc/redhat-release 2>/dev/null || cat /etc/os-release 2>/dev/null | grep PRETTY)"
+log "uptime:  $(uptime 2>/dev/null)"
+log "load:    $(cat /proc/loadavg 2>/dev/null)"
+sub "logged in / recent logins"
+{ who; last -n 25; } 2>/dev/null | cap
+
+# -----------------------------------------------------------------------------
+sec "2. PANEL + WEBROOT DETECTION"
+PANEL="unknown"
+[ -d /usr/local/directadmin ] && PANEL="DirectAdmin"
+[ -d /usr/local/psa ] || [ -d /opt/psa ] && PANEL="Plesk"
+[ -d /usr/local/cpanel ] && PANEL="cPanel"
+log "panel detected: $PANEL"
+if [ "$PANEL" = "DirectAdmin" ]; then
+  log "DA version: $(/usr/local/directadmin/directadmin v 2>/dev/null | head -1)"
+fi
+if [ "$PANEL" = "Plesk" ]; then
+  log "Plesk version: $(plesk version 2>/dev/null | head -3)"
+fi
+
+ROOTS=()
+add_root() { [ -d "$1" ] && ROOTS+=("$1"); }
+# DirectAdmin / cPanel style
+for d in /home/*/domains/*/public_html /home/*/domains/*/private_html /home/*/public_html; do
+  add_root "$d"
+done
+# Plesk style (httpdocs + subdomain dirs)
+for d in /var/www/vhosts/*/httpdocs /var/www/vhosts/*/*/httpdocs /var/www/vhosts/*/subdomains/*; do
+  add_root "$d"
+done
+# generic
+for d in /var/www/html /var/www /usr/share/nginx/html /srv/www /opt/lampp/htdocs; do
+  add_root "$d"
+done
+for d in "${EXTRA_ROOTS[@]:-}"; do add_root "$d"; done
+
+# de-duplicate, drop nested duplicates of /var/www when vhosts exist
+mapfile -t ROOTS < <(printf '%s\n' "${ROOTS[@]:-}" | awk 'NF' | sort -u)
+if [ "${#ROOTS[@]}" -eq 0 ]; then
+  log "!! no webroot found -- pass one with --root /path"
+else
+  log "webroots to scan (${#ROOTS[@]}):"
+  printf '  %s\n' "${ROOTS[@]}" | tee -a "$OUT"
+fi
+
+# temp dirs are scanned too: droppers and miners live there
+TMPDIRS=()
+for d in /tmp /var/tmp /dev/shm /var/spool/cron /home/*/tmp; do
+  [ -d "$d" ] && TMPDIRS+=("$d")
+done
+
+# -----------------------------------------------------------------------------
+sec "3. SUSPICIOUS PROCESSES"
+sub "top CPU consumers"
+ps aux --sort=-%cpu 2>/dev/null | head -15 | cap
+sub "known miner / bot process names"
+ps aux 2>/dev/null | grep -aiE 'xmrig|kdevtmpfsi|kinsing|minerd|cpuminer|xmr-stak|nanominer|phpguard|masscan|zgrab|\.ICE-unix|dbused|sysupdate|networkservice|watchbog|redis-cli.*save|/tmp/[a-z0-9]{6,}( |$)' | grep -v ' grep ' | cap
+sub "processes whose binary was deleted (classic in-memory malware)"
+for p in /proc/[0-9]*; do
+  exe=$(readlink "$p/exe" 2>/dev/null) || continue
+  case "$exe" in *"(deleted)"*) log "PID ${p#/proc/}  $exe  cmd=$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null)";; esac
+done
+sub "processes running from tmp / shm / webroot (very suspicious)"
+for p in /proc/[0-9]*; do
+  exe=$(readlink "$p/exe" 2>/dev/null) || continue
+  case "$exe" in
+    /tmp/*|/var/tmp/*|/dev/shm/*|/home/*/domains/*|/var/www/vhosts/*)
+      log "PID ${p#/proc/}  $exe  cmd=$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null)";;
+  esac
+done
+sub "processes owned by web user running a shell (webshell command exec)"
+ps -eo user,pid,ppid,etime,cmd 2>/dev/null \
+  | grep -aE '^(apache|nginx|www-data|nobody|psaadm|psacln)' \
+  | grep -aE '(/bin/(ba)?sh|python|perl|curl|wget|nc |ncat|socat)' | cap
+
+# -----------------------------------------------------------------------------
+sec "4. NETWORK"
+sub "listening sockets"
+if have ss; then ss -lntup 2>/dev/null | cap; else netstat -lntup 2>/dev/null | cap; fi
+sub "established outbound connections (look for mining pools / odd ports)"
+if have ss; then ss -ntp state established 2>/dev/null | cap; else netstat -ntp 2>/dev/null | grep ESTAB | cap; fi
+sub "iptables / firewall rules added by attacker?"
+{ iptables -S 2>/dev/null | tail -40; } | cap
+
+# -----------------------------------------------------------------------------
+sec "5. PERSISTENCE MECHANISMS"
+sub "/etc/ld.so.preload (rootkit indicator -- should normally be absent/empty)"
+if [ -e /etc/ld.so.preload ]; then
+  log "!! EXISTS:"; cat /etc/ld.so.preload 2>/dev/null | tee -a "$OUT"
+else
+  log "ok - not present"
+fi
+log "LD_PRELOAD in env files:"
+grep -risE 'LD_PRELOAD' /etc/environment /etc/profile /etc/profile.d /etc/sysconfig 2>/dev/null | cap
+
+sub "user crontabs (/var/spool/cron)"
+for f in /var/spool/cron/* /var/spool/cron/crontabs/*; do
+  [ -f "$f" ] || continue
+  log ">>> $f"
+  grep -vE '^[[:space:]]*(#|$)' "$f" 2>/dev/null | tee -a "$OUT"
+done
+sub "system cron dirs"
+grep -rsE '(curl|wget|base64|python -c|perl -e|/tmp/|/dev/shm|\.onion|nc |bash -i)' \
+  /etc/crontab /etc/cron.d /etc/cron.hourly /etc/cron.daily /etc/cron.weekly /etc/cron.monthly 2>/dev/null | cap
+if [ "$PANEL" = "DirectAdmin" ]; then
+  sub "DirectAdmin per-user crontabs"
+  grep -rsE '(curl|wget|base64|/tmp/|python|perl)' /usr/local/directadmin/data/users/*/crontab.conf 2>/dev/null | cap
+fi
+if [ "$PANEL" = "Plesk" ]; then
+  sub "Plesk scheduled tasks"
+  plesk db -Ne "SELECT id,type,command,active FROM ScheduledTasks" 2>/dev/null | cap
+fi
+
+sub "systemd units modified in last ${DAYS}d"
+find /etc/systemd/system /usr/lib/systemd/system /lib/systemd/system /root/.config/systemd 2>/dev/null \
+  -type f -mtime -"$DAYS" | cap
+sub "systemd units referencing tmp/curl/base64"
+grep -rlsE '(/tmp/|/dev/shm|base64|curl |wget )' /etc/systemd/system 2>/dev/null | cap
+
+sub "shell startup files modified in last ${DAYS}d"
+find /root /home -maxdepth 3 \( -name '.bashrc' -o -name '.bash_profile' -o -name '.profile' \
+     -o -name '.bash_login' -o -name '.zshrc' \) -mtime -"$DAYS" 2>/dev/null | cap
+log "/etc/rc.local:"
+[ -f /etc/rc.local ] && grep -vE '^[[:space:]]*(#|$)' /etc/rc.local | cap
+
+sub "SSH authorized_keys (attacker backdoor keys)"
+for f in /root/.ssh/authorized_keys /home/*/.ssh/authorized_keys /var/www/vhosts/*/.ssh/authorized_keys; do
+  [ -f "$f" ] || continue
+  log ">>> $f  (mtime $(stat -c %y "$f" 2>/dev/null))"
+  awk '{print "   " $1 " " substr($2,1,24) "... " $3}' "$f" 2>/dev/null | tee -a "$OUT"
+done
+sub "sshd_config overrides / new sudoers entries"
+grep -sE '^(PermitRootLogin|PasswordAuthentication|Port|AuthorizedKeysFile)' /etc/ssh/sshd_config | cap
+find /etc/sudoers.d -type f -mtime -"$DAYS" 2>/dev/null | cap
+sub "accounts with UID 0 or shell access added recently"
+awk -F: '$3==0 {print "UID0: " $0}' /etc/passwd | cap
+find /etc/passwd /etc/shadow /etc/group -mtime -"$DAYS" 2>/dev/null | cap
+
+sub "SUID binaries in unusual locations"
+find /tmp /var/tmp /dev/shm /home /var/www -xdev -perm -4000 -type f 2>/dev/null | cap
+
+# -----------------------------------------------------------------------------
+sec "5B. IMUNIFY360 / MALDET STATE"
+# If a commercial scanner is installed but the box still got shelled, the scanner
+# is usually disabled, unlicensed, or in log-only mode. Check that before anything else.
+if have imunify360-agent; then
+  log "imunify360 installed"
+  log "version:  $(imunify360-agent version 2>&1 | head -3)"
+  sub "license"
+  imunify360-agent register --status 2>&1 | head -10 | cap
+  sub "malicious files Imunify already knows about"
+  imunify360-agent malware malicious list --limit 100 2>&1 | head -60 | cap
+  sub "on-demand scan history"
+  imunify360-agent malware on-demand list 2>&1 | head -20 | cap
+  sub "KEY SETTINGS -- these decide whether it actually blocks anything"
+  imunify360-agent config show 2>/dev/null \
+    | grep -iE -A4 'PROACTIVE_DEFENSE|MALWARE_SCANNING|WEBSHIELD|enable_scan_inotify|mode|try_restore' \
+    | head -60 | cap
+  log ""
+  log "  -> PROACTIVE_DEFENSE mode must be 'kill', not 'log' or 'disabled'"
+  log "  -> MALWARE_SCANNING enable_scan_inotify must be true (real-time on upload)"
+  log "  -> WEBSHIELD enable must be true"
+  sub "agent health"
+  imunify360-agent doctor 2>&1 | tail -15 | cap
+else
+  log "imunify360-agent NOT found in PATH"
+fi
+if have maldet; then
+  sub "maldet recent detections"
+  maldet --report list 2>&1 | head -20 | cap
+fi
+
+# -----------------------------------------------------------------------------
+sec "6. WEBSHELL SIGNATURE SCAN"
+SIG=$(mktemp) || exit 1
+cat > "$SIG" <<'PATTERNS'
+eval[[:space:]]*\([[:space:]]*(base64_decode|gzinflate|gzuncompress|gzdecode|str_rot13|strrev|pack|hex2bin|convert_uudecode|urldecode)
+(eval|assert|create_function)[[:space:]]*\([^)]{0,120}\$_(GET|POST|REQUEST|COOKIE|SERVER|FILES)
+(call_user_func|call_user_func_array|array_map|usort|register_tick_function)[[:space:]]*\([[:space:]]*\$_(GET|POST|REQUEST|COOKIE)
+(system|shell_exec|passthru|popen|proc_open|pcntl_exec|exec)[[:space:]]*\([[:space:]]*(\$_(GET|POST|REQUEST|COOKIE)|\$[a-zA-Z_]+[[:space:]]*\.)
+\$_(GET|POST|REQUEST|COOKIE)[[:space:]]*\[[^]]*\][[:space:]]*\(
+preg_replace[[:space:]]*\([[:space:]]*['"][^'"]*/[a-zA-Z]*e[a-zA-Z]*['"]
+base64_decode[[:space:]]*\([[:space:]]*['"][A-Za-z0-9+/=]{120,}
+(gzinflate|gzuncompress|str_rot13)[[:space:]]*\([[:space:]]*base64_decode
+\$\{[[:space:]]*['"]_(GET|POST|REQUEST|COOKIE)
+\$GLOBALS[[:space:]]*\[[[:space:]]*['"][^'"]{1,20}['"][[:space:]]*\][[:space:]]*\(
+(chr[[:space:]]*\([0-9]+\)[[:space:]]*\.[[:space:]]*){4,}
+FilesMan|WSOsetcookie|wso_|b374k|r57shell|c99shell|c100shell|IndoXploit|alfashell|ALFA_DATA|AnonymousFox|priv8|Marijuana|MiniShell|Zone-?H|Sh3ll|by\.?Orb|xIndoShell|GhostShell
+(passthru|shell_exec|system)[[:space:]]*\([[:space:]]*['"](wget|curl|python|perl|chmod|nc)[[:space:]]
+move_uploaded_file[[:space:]]*\([[:space:]]*\$_FILES[^;]*\$_(GET|POST|REQUEST)
+php://input.*eval|eval.*php://input
+(fsockopen|pfsockopen)[[:space:]]*\(.*(4444|1337|31337|9001)
+mail[[:space:]]*\(.*\$_(GET|POST|REQUEST).*\$_(GET|POST|REQUEST)
+str_replace[[:space:]]*\([^)]*\)[[:space:]]*\([[:space:]]*['"]?\$
+@?(ini_set|error_reporting)[[:space:]]*\([[:space:]]*['"]?(display_errors|0)['"]?[[:space:]]*,?[[:space:]]*(0|false|off)?[[:space:]]*\)[[:space:]]*;[[:space:]]*@?set_time_limit
+PATTERNS
+
+SCAN_INC=(--include='*.php' --include='*.php[0-9]' --include='*.phtml' --include='*.pht'
+          --include='*.phar' --include='*.phps' --include='*.inc' --include='*.module'
+          --include='*.suspected' --include='*.cgi' --include='*.pl' --include='*.py'
+          --include='*.htaccess' --include='*.txt')
+
+CAND=$(mktemp)
+if [ "${#ROOTS[@]}" -gt 0 ]; then
+  grep -rlEf "$SIG" "${SCAN_INC[@]}" "${ROOTS[@]}" 2>/dev/null | sort -u > "$CAND"
+fi
+[ "${#TMPDIRS[@]}" -gt 0 ] && grep -rlEf "$SIG" "${TMPDIRS[@]}" 2>/dev/null | sort -u >> "$CAND"
+sort -u -o "$CAND" "$CAND"
+
+NC=$(wc -l < "$CAND" | tr -d ' ')
+log "files matching webshell signatures: $NC"
+log ""
+n=0
+while IFS= read -r f; do
+  [ -f "$f" ] || continue
+  n=$((n+1)); [ "$n" -gt 150 ] && { log "... (truncated, see $CAND for full list)"; break; }
+  log "### $f"
+  log "    size=$(stat -c %s "$f" 2>/dev/null)  mtime=$(stat -c %y "$f" 2>/dev/null)  owner=$(stat -c %U:%G "$f" 2>/dev/null)  perm=$(stat -c %a "$f" 2>/dev/null)"
+  grep -nEof "$SIG" "$f" 2>/dev/null | head -4 | sed 's/^/    hit: /' | cut -c1-200 | tee -a "$OUT"
+done < "$CAND"
+log ""
+log "(full candidate list kept at: $CAND)"
+
+# -----------------------------------------------------------------------------
+sec "7. OBFUSCATION HEURISTICS"
+sub "PHP files containing a single very long line (>1500 chars) -- packed shells"
+if [ "${#ROOTS[@]}" -gt 0 ]; then
+  find "${ROOTS[@]}" -type f -name '*.php' -size +1k 2>/dev/null \
+    | while IFS= read -r f; do
+        awk 'length($0)>1500 {print FILENAME; exit}' "$f" 2>/dev/null
+      done | sort -u | cap
+fi
+sub "two-step variable functions: \$v = \$_POST[..] then \$v(..)  -- split-up shells"
+# Neither half is suspicious alone, so require BOTH in the same file.
+# This catches  $f=$_POST['a']; $f($_POST['b']);  which single-line patterns miss.
+if [ "${#ROOTS[@]}" -gt 0 ]; then
+  grep -rlE '\$[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*=[[:space:]]*(\$_(GET|POST|REQUEST|COOKIE)\[|base64_decode|gzinflate|str_rot13)' \
+    --include='*.php' "${ROOTS[@]}" 2>/dev/null \
+    | while IFS= read -r f; do
+        grep -qE '\$[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*\([[:space:]]*\$' "$f" 2>/dev/null && echo "$f"
+      done | sort -u | cap
+fi
+
+sub "PHP files with almost no whitespace / high symbol density"
+if [ "${#ROOTS[@]}" -gt 0 ]; then
+  find "${ROOTS[@]}" -type f -name '*.php' -size +2k 2>/dev/null \
+    | while IFS= read -r f; do
+        tot=$(wc -c < "$f"); sp=$(tr -cd ' \n\t' < "$f" | wc -c)
+        [ "$tot" -gt 0 ] || continue
+        pct=$(( sp * 100 / tot ))
+        [ "$pct" -lt 4 ] && echo "$f  (whitespace ${pct}%)"
+      done | cap
+fi
+
+# -----------------------------------------------------------------------------
+sec "8. PHP CODE HIDDEN IN NON-PHP FILES"
+if [ "${#ROOTS[@]}" -gt 0 ]; then
+  grep -rlE '<\?php|<\?=' \
+    --include='*.jpg' --include='*.jpeg' --include='*.png' --include='*.gif' \
+    --include='*.ico' --include='*.svg' --include='*.css' --include='*.log' \
+    --include='*.zip' --include='*.bak' --include='*.old' --include='*.json' \
+    --include='*.woff' --include='*.ttf' \
+    "${ROOTS[@]}" 2>/dev/null | cap
+fi
+
+# -----------------------------------------------------------------------------
+sec "9. MALICIOUS .htaccess / php.ini"
+if [ "${#ROOTS[@]}" -gt 0 ]; then
+  sub ".htaccess mapping images to the PHP handler, or auto_prepend backdoors"
+  grep -rnsE '(AddHandler|AddType|SetHandler)[^\n]*(php|x-httpd)|auto_prepend_file|auto_append_file|php_value[[:space:]]+auto_|RewriteRule.*\.(jpg|png|gif|ico).*\.php' \
+    --include='.htaccess' "${ROOTS[@]}" 2>/dev/null | cap
+  sub ".htaccess with redirects/cloaking (SEO spam / mobile redirect)"
+  grep -rnsE 'HTTP_USER_AGENT.*(googlebot|bingbot|android|iphone)|HTTP_REFERER.*(google|yandex|bing)' \
+    --include='.htaccess' "${ROOTS[@]}" 2>/dev/null | cap
+  sub "stray php.ini / .user.ini in webroots (auto_prepend abuse)"
+  find "${ROOTS[@]}" -maxdepth 4 \( -name '.user.ini' -o -name 'php.ini' \) 2>/dev/null \
+    | while IFS= read -r f; do log ">>> $f"; grep -vE '^[[:space:]]*(;|$)' "$f" | cap; done
+fi
+
+# -----------------------------------------------------------------------------
+sec "10. RECENTLY MODIFIED FILES IN WEBROOTS (last ${DAYS}d)"
+if [ "${#ROOTS[@]}" -gt 0 ]; then
+  sub "executable-by-web extensions changed recently"
+  find "${ROOTS[@]}" -type f \( -name '*.php' -o -name '*.php[0-9]' -o -name '*.phtml' \
+       -o -name '*.pht' -o -name '*.phar' -o -name '*.cgi' -o -name '*.pl' \) \
+       -mtime -"$DAYS" -printf '%TY-%Tm-%Td %TH:%TM  %u:%g %m  %p\n' 2>/dev/null \
+       | sort -r | cap
+  sub "newest 40 files of ANY type"
+  find "${ROOTS[@]}" -type f -printf '%TY-%Tm-%Td %TH:%TM  %p\n' 2>/dev/null | sort -r | head -40 | cap
+  sub "files where ctime > mtime (timestomping -- mtime was faked)"
+  find "${ROOTS[@]}" -type f -name '*.php' -newerct "-${DAYS} days" \
+       ! -newermt "-${DAYS} days" -printf '%p  mtime=%TF ctime=%CF\n' 2>/dev/null | cap
+fi
+
+# -----------------------------------------------------------------------------
+sec "11. PERMISSION / OWNERSHIP ANOMALIES"
+if [ "${#ROOTS[@]}" -gt 0 ]; then
+  sub "world-writable files (777/666)"
+  find "${ROOTS[@]}" -type f -perm -0002 -printf '%m %u:%g %p\n' 2>/dev/null | cap
+  sub "PHP files owned by the web server user (should be owned by the site user)"
+  find "${ROOTS[@]}" -type f -name '*.php' \
+       \( -user apache -o -user nginx -o -user www-data -o -user nobody -o -user psacln \) \
+       -printf '%u:%g %p\n' 2>/dev/null | cap
+  sub "files/dirs with odd names (dot-prefixed, space-suffixed, unicode)"
+  find "${ROOTS[@]}" -maxdepth 6 \( -name '.*.php' -o -name '* ' -o -name '*..*' \) 2>/dev/null | cap
+fi
+
+# -----------------------------------------------------------------------------
+sec "12. EXECUTABLES IN UPLOAD / CACHE DIRS (should never contain PHP)"
+if [ "${#ROOTS[@]}" -gt 0 ]; then
+  find "${ROOTS[@]}" -type d \( -name 'uploads' -o -name 'upload' -o -name 'files' \
+       -o -name 'images' -o -name 'img' -o -name 'media' -o -name 'cache' -o -name 'tmp' \
+       -o -name 'backup' -o -name 'assets' \) 2>/dev/null \
+    | while IFS= read -r d; do
+        find "$d" -type f \( -name '*.php' -o -name '*.php[0-9]' -o -name '*.phtml' \
+             -o -name '*.pht' -o -name '*.phar' -o -name '*.suspected' \) 2>/dev/null
+      done | sort -u | cap
+fi
+sub "double-extension files anywhere in webroots"
+if [ "${#ROOTS[@]}" -gt 0 ]; then
+  find "${ROOTS[@]}" -type f -regextype posix-extended \
+    -regex '.*\.(php|phtml|phar|pht)\.(jpg|jpeg|png|gif|txt|bak|old|zip|html)$' 2>/dev/null | cap
+  find "${ROOTS[@]}" -type f -regextype posix-extended \
+    -regex '.*\.(jpg|jpeg|png|gif|ico|txt)\.(php|phtml|phar|pht)$' 2>/dev/null | cap
+fi
+
+# -----------------------------------------------------------------------------
+sec "13. MAIL ABUSE (spam sent through the shell)"
+if have exim; then
+  log "exim queue size: $(exim -bpc 2>/dev/null)"
+  sub "top sending scripts (exim mainlog)"
+  grep -hoE 'cwd=[^ ]+' /var/log/exim/mainlog* /var/log/exim_mainlog* 2>/dev/null \
+    | sort | uniq -c | sort -rn | head -20 | cap
+fi
+if have postqueue; then
+  log "postfix queue size: $(postqueue -p 2>/dev/null | tail -1)"
+fi
+sub "PHP mail() senders recorded by mail.log (Plesk)"
+grep -hoE 'X-PHP-Originating-Script: [^ ]+' /var/log/maillog /var/log/mail.log 2>/dev/null \
+  | sort | uniq -c | sort -rn | head -20 | cap
+sub ".forward / pipe-to-command backdoors"
+find /home /var/qmail/mailnames /var/qmail/control -maxdepth 4 -name '.forward' 2>/dev/null \
+  | while IFS= read -r f; do log ">>> $f"; cat "$f" | cap; done
+
+# -----------------------------------------------------------------------------
+sec "14. ENTRY-POINT HINTS FROM ACCESS LOGS"
+LOGS=()
+for g in /var/log/httpd/domains/*.log /var/log/apache2/*access*log \
+         /var/log/nginx/*access*log /var/www/vhosts/system/*/logs/*access*log \
+         /usr/local/apache/domlogs/*; do
+  [ -f "$g" ] && LOGS+=("$g")
+done
+log "access logs found: ${#LOGS[@]}"
+if [ "${#LOGS[@]}" -gt 0 ]; then
+  sub "POST requests to PHP inside upload/cache dirs (shell being driven)"
+  grep -hE '"POST [^"]*(upload|uploads|images|cache|tmp|assets|media)/[^"]*\.php' "${LOGS[@]}" 2>/dev/null \
+    | tail -60 | cap
+  sub "requests to any file flagged in section 6"
+  if [ -s "$CAND" ]; then
+    while IFS= read -r f; do
+      b=$(basename "$f")
+      case "$b" in *.php|*.phtml|*.phar) ;; *) continue ;; esac
+      hits=$(grep -hF "/$b" "${LOGS[@]}" 2>/dev/null | tail -5)
+      [ -n "$hits" ] && { log ">>> $b"; printf '%s\n' "$hits" | cut -c1-220 | tee -a "$OUT"; }
+    done < <(head -40 "$CAND")
+  fi
+  sub "common exploit probes (LFI/RCE/upload)"
+  grep -hoiE '(\.\./\.\./|/wp-content/plugins/[a-z0-9_-]+/[^ "]*\.php\?|xmlrpc\.php|/wp-json/wp/v2/users|eval\(|base64_|union[+ ]select|/vendor/phpunit|think\\\\app|/cgi-bin/)' \
+    "${LOGS[@]}" 2>/dev/null | sort | uniq -c | sort -rn | head -25 | cap
+fi
+sub "panel + FTP + SSH login activity"
+grep -hiE 'fail|invalid|error' /var/log/directadmin/*.log 2>/dev/null | tail -20 | cap
+grep -hiE 'authentication|login' /var/log/plesk/panel.log 2>/dev/null | tail -20 | cap
+grep -hE 'Accepted (password|publickey)' /var/log/secure /var/log/auth.log 2>/dev/null | tail -25 | cap
+grep -hiE '\[pid .*\] \[.*\] OK LOGIN' /var/log/pureftpd.log /var/log/xferlog /var/log/proftpd/* 2>/dev/null | tail -25 | cap
+sub "log files that were truncated or deleted (anti-forensics)"
+find /var/log -maxdepth 2 -type f -size 0 -mtime -"$DAYS" 2>/dev/null | cap
+
+# -----------------------------------------------------------------------------
+sec "15. SYSTEM BINARY INTEGRITY"
+if [ -f /etc/redhat-release ] && grep -qE 'release 7' /etc/redhat-release 2>/dev/null; then
+  log "!! CentOS/RHEL 7 detected -- upstream EOL was 2024-06-30."
+  log "!! Kernel/glibc/openssl get no security patches unless you have CloudLinux ELS"
+  log "!! or a similar extended-support subscription. Check: yum list installed | grep els"
+  yum list installed 2>/dev/null | grep -iE 'els|extended' | cap
+  log "   last yum transaction: $(yum history 2>/dev/null | sed -n '4p')"
+fi
+if have rpm; then
+  log "rpm -Va on core packages (5=md5 differs, T=mtime, S=size):"
+  rpm -Va coreutils util-linux openssh-server bash procps-ng 2>/dev/null | cap
+elif have debsums; then
+  debsums -c 2>/dev/null | cap
+else
+  log "no rpm/debsums available -- install debsums (apt) to verify binaries"
+fi
+sub "CMS core integrity, if WP-CLI is available"
+if have wp; then
+  for r in "${ROOTS[@]:-}"; do
+    [ -f "$r/wp-config.php" ] || continue
+    log ">>> $r"
+    (cd "$r" && wp core verify-checksums --allow-root 2>&1 | head -20) | cap
+  done
+else
+  log "wp-cli not installed -- 'wp core verify-checksums' is the fastest WordPress check"
+fi
+
+# -----------------------------------------------------------------------------
+sec "16. SUMMARY"
+log "panel:                      $PANEL"
+log "webroots scanned:           ${#ROOTS[@]}"
+log "signature-matched files:    $NC"
+log "candidate list file:        $CAND"
+log "full report:                $OUT"
+log ""
+log "NEXT STEPS"
+log "  1. Do NOT delete yet. Archive evidence first:"
+log "       tar czf /root/evidence-$STAMP.tar.gz -T $CAND"
+log "  2. Review every file in the list by hand -- signatures produce false positives"
+log "     (minifiers, caches, and some plugins legitimately use base64/eval)."
+log "  3. Find the entry point in section 14 before cleaning, or it comes back."
+log "  4. Rotate ALL credentials: panel, FTP, MySQL, SSH keys, CMS admins, API keys."
+log "  5. If section 5 shows ld.so.preload, a UID-0 account, or modified system binaries,"
+log "     assume root compromise -> rebuild the server, migrate only data."
+rm -f "$SIG"
+echo ""
+echo "Done. Report: $OUT"
