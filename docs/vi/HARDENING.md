@@ -1,43 +1,52 @@
-# Hardening DirectAdmin / Plesk sau khi bị shell
+# Hardening server shared hosting sau khi bị shell
 
 Xếp theo tỉ lệ **hiệu quả / công sức**. Làm từ trên xuống; 5 mục đầu chặn được phần lớn
 các ca tái nhiễm thực tế.
 
-> Môi trường của b: **CentOS 7**, Plesk + DirectAdmin, có **Imunify360**.
-> Đọc mục 0 và `IMUNIFY360.md` trước — hai cái đó liên quan trực tiếp đến lý do bị shell.
-
 ---
 
-## 0. CentOS 7 đã hết hạn hỗ trợ (EOL 30/06/2024)
+## 0. OS còn nhận bản vá bảo mật không?
 
-Đây là rủi ro nền, không sửa được bằng cấu hình. Tính đến nay là **hơn 2 năm** kernel,
-glibc, OpenSSL, và các thư viện hệ thống không nhận bản vá bảo mật nào từ upstream.
+Đây là rủi ro nền, không sửa được bằng cấu hình, và nên kiểm tra trước mọi thứ khác vì câu
+trả lời có thể thay đổi cả kế hoạch.
 
-Hệ quả kéo theo, đều làm tăng bề mặt tấn công:
-- Plesk và DirectAdmin đều đã ngừng hỗ trợ CentOS 7 → b đang kẹt ở bản panel cũ,
-  không lên được version có vá lỗi
-- PHP version mới không build được → site buộc chạy PHP cũ
-- Imunify360 agent cũng có mốc ngừng hỗ trợ CentOS 7 — kiểm tra agent còn nhận update không:
-  `imunify360-agent version` và ngày sửa đổi của `/var/imunify360/`
-
-Kiểm tra tình trạng hiện tại:
 ```bash
-cat /etc/redhat-release
+cat /etc/redhat-release 2>/dev/null; cat /etc/os-release | grep PRETTY
 uname -r
-rpm -q kernel | tail -3                        # kernel mới nhất từ bao giờ?
-yum list installed | grep -iE 'els|extended'   # có đang mua extended support không?
-yum history | head -6                          # lần cập nhật cuối
+rpm -q kernel 2>/dev/null | tail -3            # kernel mới nhất từ bao giờ?
+yum list installed 2>/dev/null | grep -iE 'els|extended'
+yum history 2>/dev/null | head -6              # hoặc: apt list --upgradable
 ```
 
-**Ba lựa chọn**, theo thứ tự t khuyên dùng:
+**CentOS 7 hết hạn hỗ trợ từ 30/06/2024.** CentOS 8 còn sớm hơn — 2021. Trên bản EOL thì
+kernel, glibc và OpenSSL không nhận bản vá nào từ upstream, và hệ quả kéo theo còn mở rộng bề
+mặt tấn công thêm nữa: Plesk, DirectAdmin và cPanel đều đã ngừng hỗ trợ CentOS 7, nên panel bị
+kẹt ở bản cũ, và điều đó lại làm kẹt luôn các version PHP build được.
+
+Ba lựa chọn, theo thứ tự thường nên chọn:
 
 | | Cách | Ưu | Nhược |
 |---|---|---|---|
-| **A** | **CloudLinux ELS cho CentOS 7** | Có vá bảo mật trở lại trong vài giờ, không phải migrate gì. B đã là khách CloudLinux (Imunify360) nên thêm ELS là đơn giản nhất | Trả phí/server/tháng. Chỉ là giải pháp cầu nối, không giải quyết việc panel/PHP bị kẹt version |
-| **B** | **Server mới AlmaLinux 8/9 + migrate sang** | Sạch hoàn toàn. Quan trọng hơn nữa: server mới **không mang theo backdoor** — giải quyết luôn vấn đề tin tưởng sau khi bị hack | Tốn công, cần downtime có kế hoạch |
-| **C** | ~~In-place upgrade (ELevate)~~ | — | **Không nên** khi có control panel. Plesk/DirectAdmin không hỗ trợ, hỏng là mất cả server |
+| **A** | Mua extended support (ví dụ CloudLinux ELS cho CentOS 7) | Có vá bảo mật trở lại trong vài giờ, không phải migrate gì | Trả phí theo server. Chỉ là cầu nối — panel và PHP vẫn kẹt version |
+| **B** | Server mới trên OS còn hỗ trợ (AlmaLinux, Rocky, Debian, Ubuntu LTS) rồi migrate sang | Sạch thật sự. Sau sự cố còn lợi ích thứ hai: server mới **không mang theo backdoor** | Tốn công, cần downtime có kế hoạch |
+| **C** | ~~In-place upgrade (ELevate và tương tự)~~ | — | **Không nên khi có control panel.** Plesk và DirectAdmin không hỗ trợ; hỏng là mất cả server |
 
-Cách A ngay lập tức, cách B trong 1–3 tháng tới là lộ trình hợp lý.
+Cách A ngay, cách B trong 1–3 tháng tới, là lộ trình hợp lý.
+
+Công cụ migrate: Plesk có extension **Plesk Migrator**; DirectAdmin có Admin Backup/Transfer;
+cPanel có Transfer Tool.
+
+> **Khi migrate sau sự cố bảo mật, chỉ mang dữ liệu — không mang code.** Migrate nguyên si là
+> bê luôn shell sang server mới. Cài lại CMS, plugin và theme từ nguồn chính thức, chỉ mang
+> `uploads/` và database.
+
+Nâng luôn giới hạn inotify. Mặc định 8192 là quá thấp cho server nhiều site, và nó làm
+scanner real-time chết trong im lặng khi vượt ngưỡng:
+
+```bash
+cat /proc/sys/fs/inotify/max_user_watches
+echo 'fs.inotify.max_user_watches=524288' >> /etc/sysctl.conf && sysctl -p
+```
 
 Công cụ migrate sang server mới:
 - Plesk: extension **Plesk Migrator** (Tools & Settings → Migration & Transfer Manager)
@@ -58,34 +67,82 @@ echo 'fs.inotify.max_user_watches=524288' >> /etc/sysctl.conf && sysctl -p
 ## 1. Chặn thực thi PHP trong thư mục upload
 
 Đây là biện pháp đơn lẻ hiệu quả nhất. Shell gần như luôn được upload vào `uploads/`,
-`images/`, `cache/`, `tmp/`.
+`images/`, `cache/`, `tmp/`, `media/`.
 
-**Apache (DirectAdmin)** — tạo `.htaccess` trong từng thư mục upload:
+**Cách làm khác nhau theo từng web server, và làm sai thì thất bại trong im lặng.**
+Chi tiết đầy đủ, kèm cách kiểm chứng, ở **[MITIGATION.md](MITIGATION.md)** — đọc file đó
+trước khi triển khai. Tóm tắt:
 
-```apache
-# /home/user/domains/site.com/public_html/wp-content/uploads/.htaccess
-<FilesMatch "\.(php|php[0-9]|phtml|pht|phar|phps|cgi|pl|py|shtml)$">
-    Require all denied
-</FilesMatch>
-php_flag engine off
+| Web server | Đọc `.htaccess`? |
+|---|---|
+| Apache, LiteSpeed Enterprise | Có (Apache còn phụ thuộc `AllowOverride`) |
+| **OpenLiteSpeed, nginx** | **Không** — `.htaccess` bị bỏ qua hoàn toàn |
+
+Xác định web server thật:
+```bash
+ss -ltnp | grep -E ':(80|443)\b'
+grep -E '^webserver=' /usr/local/directadmin/custombuild/options.conf 2>/dev/null
+/usr/local/lsws/bin/lshttpd -v 2>/dev/null      # có chữ "Open" = OpenLiteSpeed
 ```
 
-Chắc chắn hơn: đặt trong vhost config để user không xoá được. DirectAdmin dùng custom
-template `/usr/local/directadmin/data/templates/custom/`.
+**Apache / LiteSpeed Enterprise:**
 
-**Nginx (Plesk)** — Domains → Apache & nginx Settings → Additional nginx directives:
+```apache
+<FilesMatch "(?i)\.(php|php[0-9]|phtml|phtm|pht|phar|phps|cgi|pl|py|shtml)$">
+    Require all denied
+</FilesMatch>
+```
+
+Tiền tố `(?i)` là **bắt buộc**. `<FilesMatch>` mặc định phân biệt hoa thường, và attacker
+upload `shell.PHP` viết hoa chính là để lách rule viết `\.php$`. Đây không phải giả thuyết —
+đó là cách các shell trong sự cố thực tế đã đặt tên.
+
+Đừng thêm `php_flag engine off` hay `php_admin_flag engine off`: đó là directive của mod_php,
+dưới PHP-FPM hoặc LiteSpeed SAPI nó gây **lỗi 500**.
+
+Cũng kiểm tra `AllowOverride` có gồm `AuthConfig` hoặc `Limit` — nếu không, `Require` làm
+Apache trả 500 cho cả thư mục:
+```bash
+grep -rhs 'AllowOverride' /usr/local/directadmin/data/users/*/httpd.conf 2>/dev/null | sort -u
+```
+
+**nginx:**
 
 ```nginx
-location ~* /(uploads|files|images|cache|tmp)/.*\.(php|phtml|phar|pht)$ {
+location ~* ^/(uploads|files|images|cache|tmp|media|logs)/.*\.(php[0-9]?|phtml?|phar|phps)$ {
     deny all;
-    return 403;
 }
 location ~* /\.(git|env|svn) { deny all; }
 location ~* \.(sql|bak|old|log|ini|conf)$ { deny all; }
 ```
 
-Áp cho **tất cả** vhost: Plesk → Tools & Settings → Apache & nginx Template, hoặc
-`plesk sbin httpdmng --reconfigure-all` sau khi sửa template.
+`~*` đã là không phân biệt hoa thường nên không cần thêm gì. Đặt **trước** khối
+`location ~ \.php$` vì nginx lấy regex khớp đầu tiên theo thứ tự xuất hiện.
+
+**OpenLiteSpeed:** không dùng được `.htaccess`. Vào WebAdmin → Virtual Hosts → Rewrite →
+Rewrite Rules:
+
+```apache
+RewriteRule ^(tmp|cache|logs|uploads|images)/.*\.(php|php[0-9]|phtml|phtm|phar|phps)$ - [F,L,NC]
+```
+
+**Kiểm chứng — bắt buộc, đừng bỏ qua:**
+
+```bash
+d=/path/to/public_html/tmp
+printf '<?php echo "EXECUTED"; ?>' > "$d/zz-ir-probe.PHP"
+curl -sS https://site.com/tmp/zz-ir-probe.PHP     # phải ra 403/404, KHÔNG ra "EXECUTED"
+rm -f "$d/zz-ir-probe.PHP"
+```
+
+Chú ý đuôi `.PHP` viết hoa trong file thăm dò. Test bằng chữ thường rồi kết luận đã ổn chính
+là cách lỗ hổng hoa-thường sống sót.
+
+**Làm cho rule sống sót qua panel rebuild:** panel sinh lại vhost config từ template, sửa tay
+vào file được sinh ra sẽ bị ghi đè trong im lặng. DirectAdmin dùng
+`/usr/local/directadmin/data/templates/custom/` rồi `./build rewrite_confs`; Plesk dùng
+Additional directives hoặc template chung rồi `plesk sbin httpdmng --reconfigure-all`.
+Bảng đầy đủ cho từng panel ở [MITIGATION.md](MITIGATION.md).
 
 ---
 
@@ -265,11 +322,14 @@ Kèm theo: rootkit check định kỳ (`rkhunter --check`, `chkrootkit`), và cr
 ## Checklist rút gọn
 
 ```
-[ ] CentOS 7: đã mua ELS, HOẶC đã có kế hoạch migrate sang AlmaLinux
+[ ] OS còn nhận bản vá bảo mật, HOẶC đã mua extended support, HOẶC đã có kế hoạch migrate
 [ ] fs.inotify.max_user_watches đã nâng lên 524288
-[ ] Imunify360: PROACTIVE_DEFENSE = kill, extension load đủ mọi PHP version
-    (chi tiết trong IMUNIFY360.md -- làm trước tất cả các mục dưới)
-[ ] PHP tắt trong uploads/ cache/ images/ tmp/  (mọi vhost)
+[ ] Đã kiểm tra config scanner thật (không phải giả định) -- xem IMUNIFY360.md,
+    làm trước tất cả các mục dưới
+[ ] ModSecurity dùng ruleset thật (FULL/OWASP/Comodo), mode On, không phải detection-only
+[ ] PHP tắt trong uploads/ cache/ images/ tmp/ media/  (mọi vhost)
+[ ] Đã KIỂM CHỨNG bằng curl, dùng file thăm dò đuôi .PHP viết hoa
+[ ] Rule đặt ở chỗ panel rebuild không ghi đè
 [ ] disable_functions + open_basedir đã áp cho FPM (không chỉ CLI)
 [ ] PHP-FPM pool riêng từng user
 [ ] File code thuộc user site, KHÔNG thuộc apache/nginx/www-data

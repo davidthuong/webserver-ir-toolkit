@@ -106,6 +106,125 @@ for d in /tmp /var/tmp /dev/shm /var/spool/cron /home/*/tmp; do
 done
 
 # -----------------------------------------------------------------------------
+sec "2B. WEB SERVER + PHP SAPI"
+# Which web server actually serves requests decides which mitigations exist.
+# Getting this wrong is the single most common wasted-effort mistake in an IR:
+# writing .htaccess rules on a server that never reads them.
+WEBSRV="unknown"
+HTACCESS="unknown"
+
+if [ -d /usr/local/lsws ]; then
+  lsver=$(/usr/local/lsws/bin/lshttpd -v 2>/dev/null | head -1)
+  # Never guess the edition: Enterprise reads .htaccess, OpenLiteSpeed does not,
+  # so a wrong guess here sends the responder down a mitigation path that does
+  # nothing. When the version string is unreadable, say so instead.
+  case "$lsver" in
+    *[Oo]pen*)     WEBSRV="OpenLiteSpeed" ;;
+    *Enterprise*)  WEBSRV="LiteSpeed Enterprise" ;;
+    *)
+      if [ -x /usr/local/lsws/bin/openlitespeed ]; then
+        WEBSRV="OpenLiteSpeed"
+      else
+        WEBSRV="LiteSpeed (edition UNDETERMINED)"
+      fi
+      ;;
+  esac
+  log "litespeed version string: ${lsver:-<unreadable>}"
+elif have nginx && { systemctl is-active nginx >/dev/null 2>&1 || pgrep -x nginx >/dev/null 2>&1; }; then
+  WEBSRV="nginx"
+elif have httpd || have apache2; then
+  WEBSRV="Apache"
+fi
+
+# DirectAdmin records its choice explicitly -- authoritative when present
+if [ -f /usr/local/directadmin/custombuild/options.conf ]; then
+  sub "DirectAdmin CustomBuild web server / PHP mode"
+  grep -E '^(webserver|php[0-9]_release|php[0-9]_mode|mod_security)=' \
+    /usr/local/directadmin/custombuild/options.conf 2>/dev/null | cap
+  dawebsrv=$(sed -n 's/^webserver=//p' /usr/local/directadmin/custombuild/options.conf 2>/dev/null | head -1)
+  case "$dawebsrv" in
+    openlitespeed) WEBSRV="OpenLiteSpeed" ;;
+    litespeed)     WEBSRV="LiteSpeed Enterprise" ;;
+    nginx)         WEBSRV="nginx" ;;
+    nginx_apache)  WEBSRV="nginx + Apache (proxy)" ;;
+    apache)        WEBSRV="Apache" ;;
+  esac
+fi
+
+log ""
+log "WEB SERVER: $WEBSRV"
+
+sub "what is really listening on 80/443 (most authoritative check)"
+if have ss; then ss -ltnp 2>/dev/null | grep -E ':(80|443)\b' | cap
+elif have netstat; then netstat -ltnp 2>/dev/null | grep -E ':(80|443)\b' | cap
+fi
+sub "web service unit state"
+for u in httpd apache2 nginx lsws litespeed lshttpd openlitespeed; do
+  s=$(systemctl is-active "$u" 2>/dev/null) || true
+  [ -n "${s:-}" ] && [ "$s" != "inactive" ] && [ "$s" != "unknown" ] && log "  $u = $s"
+done
+
+# --- .htaccess applicability: the part that trips people up ---
+case "$WEBSRV" in
+  Apache|"nginx + Apache (proxy)")   HTACCESS="yes (subject to AllowOverride)" ;;
+  "LiteSpeed Enterprise")            HTACCESS="yes (read natively)" ;;
+  OpenLiteSpeed)                     HTACCESS="NO" ;;
+  nginx)                             HTACCESS="NO" ;;
+  "LiteSpeed (edition UNDETERMINED)") HTACCESS="UNKNOWN -- verify before relying on it" ;;
+esac
+log ""
+log "  .htaccess honored: $HTACCESS"
+case "$HTACCESS" in
+  UNKNOWN*)
+    log "  !! Could not read the LiteSpeed version string, so the edition is unknown."
+    log "  !! Enterprise reads .htaccess; OpenLiteSpeed ignores it. Do not assume."
+    log "  !! Check manually:  /usr/local/lsws/bin/lshttpd -v"
+    log "  !! Or test empirically -- drop a deny rule in a test dir and curl the file."
+    ;;
+  NO)
+    log "  !! Rules in .htaccess are SILENTLY IGNORED on $WEBSRV."
+    log "  !! <FilesMatch> / 'Require all denied' will NOT block anything."
+    log "  !! Mitigate at the web server config layer, or via ModSecurity/WAF."
+    log "  !! See docs: MITIGATION.md"
+    ;;
+  yes*)
+    log "  AllowOverride must include AuthConfig or Limit for 'Require' to work;"
+    log "  if it does not, Apache returns 500 for the whole directory."
+    sub "AllowOverride in effect"
+    grep -rhs 'AllowOverride' /etc/httpd/conf/httpd.conf /etc/apache2/apache2.conf \
+      /usr/local/directadmin/data/users/*/httpd.conf /etc/httpd/conf.d/ 2>/dev/null \
+      | sort -u | head -10 | cap
+    ;;
+esac
+
+# --- PHP binaries and whether a security extension covers each one ---
+sub "PHP binaries found, and security-extension coverage per version"
+# A site running a PHP version with no protective extension is unprotected even
+# when the scanner dashboard reports "enabled".
+phpfound=0
+for p in /usr/local/lsws/lsphp*/bin/php /opt/plesk/php/*/bin/php \
+         /usr/local/php*/bin/php /opt/cpanel/ea-php*/root/usr/bin/php \
+         /opt/alt/php*/usr/bin/php /usr/bin/php /usr/local/bin/php; do
+  [ -x "$p" ] || continue
+  phpfound=$((phpfound+1))
+  ver=$("$p" -r 'echo PHP_VERSION;' 2>/dev/null || echo '?')
+  ext=$("$p" -m 2>/dev/null | grep -iE 'imunify|snuffleupagus|suhosin' | tr '\n' ',' )
+  if [ -n "$ext" ]; then
+    log "  OK      $p  (php $ver)  ext: ${ext%,}"
+  else
+    log "  NO EXT  $p  (php $ver)  <-- no hardening extension loaded"
+  fi
+done
+[ "$phpfound" = "0" ] && log "  no PHP binary found in the usual locations"
+
+# --- which PHP version each site runs (to cross-reference the list above) ---
+if [ "$PANEL" = "DirectAdmin" ]; then
+  sub "PHP version selected per DirectAdmin user"
+  grep -h 'php[0-9]*_select\|php_ver' /usr/local/directadmin/data/users/*/user.conf 2>/dev/null \
+    | sort | uniq -c | sort -rn | cap
+fi
+
+# -----------------------------------------------------------------------------
 sec "3. SUSPICIOUS PROCESSES"
 sub "top CPU consumers"
 ps aux --sort=-%cpu 2>/dev/null | head -15 | cap
@@ -401,12 +520,23 @@ find /home /var/qmail/mailnames /var/qmail/control -maxdepth 4 -name '.forward' 
 # -----------------------------------------------------------------------------
 sec "14. ENTRY-POINT HINTS FROM ACCESS LOGS"
 LOGS=()
-for g in /var/log/httpd/domains/*.log /var/log/apache2/*access*log \
-         /var/log/nginx/*access*log /var/www/vhosts/system/*/logs/*access*log \
-         /usr/local/apache/domlogs/*; do
+for g in /var/log/httpd/domains/*.log \
+         /var/log/apache2/*access*log /var/log/apache2/domlogs/* \
+         /var/log/nginx/*access*log \
+         /var/www/vhosts/system/*/logs/*access*log \
+         /usr/local/apache/domlogs/* \
+         /usr/local/lsws/logs/*access*log /usr/local/lsws/logs/*/*access*log \
+         /home/*/logs/*access*log /home/*/logs/*/*access*log \
+         /var/log/virtualmin/*access_log; do
   [ -f "$g" ] && LOGS+=("$g")
 done
 log "access logs found: ${#LOGS[@]}"
+if [ "${#LOGS[@]}" -eq 0 ]; then
+  log "!! none found -- locate them manually, then re-run with the path:"
+  log "     ss -ltnp | grep -E ':(80|443)'   then check that server's config"
+  log "   LiteSpeed/OpenLiteSpeed default: /usr/local/lsws/logs/"
+  log "   CyberPanel: /home/<domain>/logs/    Virtualmin: /var/log/virtualmin/"
+fi
 if [ "${#LOGS[@]}" -gt 0 ]; then
   sub "POST requests to PHP inside upload/cache dirs (shell being driven)"
   grep -hE '"POST [^"]*(upload|uploads|images|cache|tmp|assets|media)/[^"]*\.php' "${LOGS[@]}" 2>/dev/null \
@@ -423,6 +553,25 @@ if [ "${#LOGS[@]}" -gt 0 ]; then
   sub "common exploit probes (LFI/RCE/upload)"
   grep -hoiE '(\.\./\.\./|/wp-content/plugins/[a-z0-9_-]+/[^ "]*\.php\?|xmlrpc\.php|/wp-json/wp/v2/users|eval\(|base64_|union[+ ]select|/vendor/phpunit|think\\\\app|/cgi-bin/)' \
     "${LOGS[@]}" 2>/dev/null | sort | uniq -c | sort -rn | head -25 | cap
+
+  sub "CMS component/plugin task endpoints in the query string"
+  # Joomla and WordPress route exploits through option=/task=/action= parameters.
+  # Anything here with a 500 usually means the component EXISTS and is reachable
+  # -- a 404 means it is not installed on that vhost.
+  grep -hoiE 'option=com_[a-z0-9_]+&[a-z]*task=[a-z0-9_.]+|action=[a-z0-9_]*upload[a-z0-9_]*' \
+    "${LOGS[@]}" 2>/dev/null | sort | uniq -c | sort -rn | head -25 | cap
+
+  sub "status codes returned to those endpoint probes"
+  grep -hoiE '"(GET|POST) [^"]*(option=com_[a-z0-9_]+|task=[a-z0-9_.]*upload[a-z0-9_.]*)[^"]*" [0-9]{3}' \
+    "${LOGS[@]}" 2>/dev/null | grep -oE '[0-9]{3}$' | sort | uniq -c | sort -rn | head | cap
+
+  log ""
+  log "  !! IMPORTANT -- a quiet result here does NOT mean no exploitation."
+  log "  !! Real exploitation is usually POST, with the parameters in the request"
+  log "  !! BODY, which access logs do not record. Only the GET-style probes are"
+  log "  !! visible above. Correlate POST requests by timestamp against the mtime"
+  log "  !! of the files found in section 6/10 instead:"
+  log "  !!    grep -h 'POST /index.php' <log> | grep '<DD/Mon/YYYY>'"
 fi
 sub "panel + FTP + SSH login activity"
 grep -hiE 'fail|invalid|error' /var/log/directadmin/*.log 2>/dev/null | tail -20 | cap

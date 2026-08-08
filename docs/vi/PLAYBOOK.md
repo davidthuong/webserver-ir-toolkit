@@ -1,4 +1,4 @@
-# Playbook xử lý server bị shell / malware (DirectAdmin & Plesk)
+# Playbook xử lý server bị shell / malware
 
 Thứ tự các bước dưới đây quan trọng. Sai thứ tự phổ biến nhất là **xoá shell trước khi tìm
 đường vào** — hacker sẽ upload lại trong vài giờ.
@@ -48,7 +48,8 @@ Nếu cần **chặn truy cập web ngay** mà vẫn muốn xem log tiếp:
 - Plesk: **Domains → Hosting Settings → tắt PHP support** cho vhost đó (shell PHP chết ngay,
   log HTTP vẫn ghi)
 
-Đừng đổi mật khẩu ở bước này. Đổi bây giờ chỉ làm hacker biết b đã phát hiện; để sau khi dọn.
+Đừng đổi mật khẩu ở bước này. Đổi bây giờ chỉ báo cho attacker biết đã bị phát hiện, trong khi
+đường vào vẫn còn mở. Credentials để ở Phase 6.
 
 ---
 
@@ -86,12 +87,13 @@ sudo bash webshell-triage.sh --days 60
 
 Script chỉ đọc, không sửa gì. Kết quả ở `/root/triage-<host>-<time>.txt`.
 
-Đọc theo thứ tự ưu tiên: **section 5** (persistence — nghiêm trọng nhất) → **section 6**
-(shell) → **section 14** (entry point) → phần còn lại.
+Đọc theo thứ tự ưu tiên: **section 2B** (web server nào đang thực sự phục vụ request — quyết
+định mọi biện pháp khoanh vùng khả dụng) → **section 5** (persistence — nghiêm trọng nhất) →
+**section 6** (shell) → **section 14** (entry point) → phần còn lại.
 
 **Đã có Imunify360 trên server** → dùng nó trước, nhưng phải kiểm tra config trước đã.
 Server có Imunify mà vẫn bị shell = Imunify đang bị tắt, hết license, hoặc ở mode log-only.
-Xem `IMUNIFY360.md` — 6 nguyên nhân và cách kiểm tra từng cái.
+Xem [IMUNIFY360.md](IMUNIFY360.md) — các nguyên nhân và cách kiểm tra từng cái.
 
 ```bash
 imunify360-agent malware malicious list --limit 200      # nó đã biết file nào độc
@@ -207,8 +209,9 @@ Sau khi dọn, trước khi mở lại. Giả định mọi thứ trong DB và c
 
 ## Phase 7 — Hardening
 
-Xem `HARDENING.md`. Tối thiểu phải làm: tắt PHP trong thư mục upload, `disable_functions`,
-ModSecurity, firewall + fail2ban, 2FA cho panel.
+Xem [HARDENING.md](HARDENING.md). Tối thiểu phải làm: chặn PHP trong thư mục upload — dùng
+công thức đúng cho web server thật của mình, xem [MITIGATION.md](MITIGATION.md) —
+`disable_functions`, ModSecurity với ruleset thật, firewall + fail2ban, 2FA cho panel.
 
 ---
 

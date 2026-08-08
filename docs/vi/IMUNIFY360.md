@@ -90,7 +90,7 @@ ls -la /var/imunify360/                     # xem file signature update lần cu
 ```
 
 Nếu ngày update signature cách đây vài tháng → license hoặc kết nối ra ngoài có vấn đề.
-Nhớ là ở Phase 1 của Playbook b có thể đã chặn outbound — kiểm tra firewall không chặn
+Lưu ý: nếu đã chặn outbound ở Phase 1 của Playbook thì có thể chính firewall đang chặn
 nhầm domain của CloudLinux.
 
 ---
