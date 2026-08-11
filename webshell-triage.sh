@@ -91,7 +91,11 @@ log "os:      $(cat /etc/redhat-release 2>/dev/null || cat /etc/os-release 2>/de
 log "uptime:  $(uptime 2>/dev/null)"
 log "load:    $(cat /proc/loadavg 2>/dev/null)"
 sub "logged in / recent logins"
-{ who; last -n 25; } 2>/dev/null | cap
+# -w is not optional: without it `last` truncates the user column to 8 characters.
+# A panel FTP account named codexdeploy0811@customs.example.com shows up as
+# "codexdep", which is not a user that exists -- and an investigation that starts
+# by looking up a username that was never real wastes the time it takes to notice.
+{ who; last -w -F -n 25; } 2>/dev/null | cap
 
 # -----------------------------------------------------------------------------
 sec "2. PANEL + WEBROOT DETECTION"
@@ -663,7 +667,25 @@ sub "panel + FTP + SSH login activity"
 grep -hiE 'fail|invalid|error' /var/log/directadmin/*.log 2>/dev/null | tail -20 | cap
 grep -hiE 'authentication|login' /var/log/plesk/panel.log 2>/dev/null | tail -20 | cap
 grep -hE 'Accepted (password|publickey)' /var/log/secure /var/log/auth.log 2>/dev/null | tail -25 | cap
-grep -hiE '\[pid .*\] \[.*\] OK LOGIN' /var/log/pureftpd.log /var/log/xferlog /var/log/proftpd/* 2>/dev/null | tail -25 | cap
+# Match both FTP daemons. pure-ftpd writes "OK LOGIN", proftpd writes
+# "Login successful", and they log to different files -- so a check written for
+# one of them reports nothing on a host running the other, which reads exactly
+# like a host with no FTP activity. Report which daemon is actually running so
+# an empty result can be told apart from an unsupported log format.
+FTPD="none detected"
+for u in proftpd pure-ftpd vsftpd; do
+  systemctl is-active "$u" >/dev/null 2>&1 && FTPD="$u"
+done
+[ "$FTPD" = "none detected" ] && pgrep -x proftpd >/dev/null 2>&1 && FTPD="proftpd"
+[ "$FTPD" = "none detected" ] && pgrep -x pure-ftpd >/dev/null 2>&1 && FTPD="pure-ftpd"
+log "  FTP daemon: $FTPD"
+grep -rhiE 'OK LOGIN|Login successful' \
+  /var/log/pureftpd.log /var/log/xferlog /var/log/proftpd/ /var/log/messages \
+  /var/log/secure 2>/dev/null | tail -25 | cap
+sub "FTP login FAILURES -- brute force against panel FTP accounts"
+grep -rhiE 'authentication failed|Login failed|no such user' \
+  /var/log/pureftpd.log /var/log/proftpd/ /var/log/messages 2>/dev/null \
+  | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort | uniq -c | sort -rn | head -15 | cap
 sub "log files that were truncated or deleted (anti-forensics)"
 find /var/log -maxdepth 2 -type f -size 0 -mtime -"$DAYS" 2>/dev/null | cap
 
