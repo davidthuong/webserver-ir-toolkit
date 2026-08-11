@@ -95,17 +95,45 @@ sub "logged in / recent logins"
 
 # -----------------------------------------------------------------------------
 sec "2. PANEL + WEBROOT DETECTION"
+# Detect by EXECUTABLE, not by directory, and report every panel found.
+#
+# The previous version tested directories and chained them as
+#   [ -d /usr/local/psa ] || [ -d /opt/psa ] && PANEL="Plesk"
+# which parses as ( A || B ) && C, so a leftover /usr/local/psa from a panel
+# that is no longer installed silently relabelled a DirectAdmin host as Plesk.
+# That is not cosmetic: the per-user crontab check, the per-user PHP version
+# check and several path choices branch on $PANEL, so a wrong label means those
+# checks quietly do not run and the report looks clean because it never looked.
+PANELS=()
 PANEL="unknown"
-[ -d /usr/local/directadmin ] && PANEL="DirectAdmin"
-[ -d /usr/local/psa ] || [ -d /opt/psa ] && PANEL="Plesk"
-[ -d /usr/local/cpanel ] && PANEL="cPanel"
-log "panel detected: $PANEL"
-if [ "$PANEL" = "DirectAdmin" ]; then
-  log "DA version: $(/usr/local/directadmin/directadmin v 2>/dev/null | head -1)"
+[ -x /usr/local/directadmin/directadmin ] && PANELS+=("DirectAdmin")
+if [ -x /usr/sbin/plesk ] || [ -x /usr/local/psa/bin/init_conf ] || [ -f /usr/local/psa/version ]; then
+  PANELS+=("Plesk")
 fi
-if [ "$PANEL" = "Plesk" ]; then
-  log "Plesk version: $(plesk version 2>/dev/null | head -3)"
-fi
+[ -x /usr/local/cpanel/cpanel ] && PANELS+=("cPanel")
+
+case "${#PANELS[@]}" in
+  0) log "panel detected: unknown -- no panel binary found" ;;
+  1) PANEL="${PANELS[0]}"; log "panel detected: $PANEL" ;;
+  *) PANEL="${PANELS[0]}"
+     log "panel detected: ${PANELS[*]}  -- MORE THAN ONE. Using ${PANEL}."
+     log "  Two panels cannot serve the same host, so one of these is leftover"
+     log "  files from a previous install. Confirm which one is live before"
+     log "  trusting any path in this report:  ss -ltnp | grep -E ':(2222|8443|2087)'"
+     ;;
+esac
+
+sub "panel evidence on disk (so a wrong label above is debuggable)"
+for p in /usr/local/directadmin/directadmin /usr/sbin/plesk /usr/local/psa/version \
+         /usr/local/psa /opt/psa /usr/local/cpanel/cpanel /usr/local/cpanel; do
+  [ -e "$p" ] && log "  present: $p"
+done
+
+[ -x /usr/local/directadmin/directadmin ] && \
+  log "DA version:    $(/usr/local/directadmin/directadmin v 2>/dev/null | head -1)"
+have plesk && log "Plesk version: $(plesk version 2>/dev/null | head -3)"
+[ -x /usr/local/cpanel/cpanel ] && \
+  log "cPanel version: $(/usr/local/cpanel/cpanel -V 2>/dev/null | head -1)"
 
 ROOTS=()
 add_root() { [ -d "$1" ] && ROOTS+=("$1"); }
@@ -260,7 +288,8 @@ done
 [ "$phpfound" = "0" ] && log "  no PHP binary found in the usual locations"
 
 # --- which PHP version each site runs (to cross-reference the list above) ---
-if [ "$PANEL" = "DirectAdmin" ]; then
+# Gated on the data, not the $PANEL label, for the same reason as the crontabs.
+if [ -d /usr/local/directadmin/data/users ]; then
   sub "PHP version selected per DirectAdmin user"
   grep -h 'php[0-9]*_select\|php_ver' /usr/local/directadmin/data/users/*/user.conf 2>/dev/null \
     | sort | uniq -c | sort -rn | cap
@@ -319,17 +348,31 @@ done
 sub "system cron dirs"
 grep -rsE '(curl|wget|base64|python -c|perl -e|/tmp/|/dev/shm|\.onion|nc |bash -i)' \
   /etc/crontab /etc/cron.d /etc/cron.hourly /etc/cron.daily /etc/cron.weekly /etc/cron.monthly 2>/dev/null | cap
-if [ "$PANEL" = "DirectAdmin" ]; then
+# Gate these on the data actually being present, not on the $PANEL label. A
+# mislabelled panel must not be able to skip a persistence check -- user crontabs
+# are one of the first places a backdoor reappears from after a cleanup.
+if [ -d /usr/local/directadmin/data/users ]; then
   sub "DirectAdmin per-user crontabs"
   grep -rsE '(curl|wget|base64|/tmp/|python|perl)' /usr/local/directadmin/data/users/*/crontab.conf 2>/dev/null | cap
+  sub "DirectAdmin per-user crontabs -- full listing of any that are non-empty"
+  for f in /usr/local/directadmin/data/users/*/crontab.conf; do
+    [ -s "$f" ] || continue
+    n=$(grep -cvE '^[[:space:]]*(#|$)' "$f" 2>/dev/null)
+    [ "${n:-0}" -gt 0 ] && log "  $n line(s): $f"
+  done
 fi
-if [ "$PANEL" = "Plesk" ]; then
+if have plesk; then
   sub "Plesk scheduled tasks"
   plesk db -Ne "SELECT id,type,command,active FROM ScheduledTasks" 2>/dev/null | cap
 fi
 
 sub "systemd units modified in last ${DAYS}d"
-find /etc/systemd/system /usr/lib/systemd/system /lib/systemd/system /root/.config/systemd 2>/dev/null \
+# /lib is a symlink to /usr/lib on modern systems, so listing both prints every
+# unit twice and buries the one entry that matters in a screenful of duplicates.
+SDDIRS=(/etc/systemd/system /root/.config/systemd)
+[ -d /usr/lib/systemd/system ] && SDDIRS+=(/usr/lib/systemd/system)
+[ -d /lib/systemd/system ] && [ ! -L /lib ] && [ ! -L /lib/systemd ] && SDDIRS+=(/lib/systemd/system)
+find "${SDDIRS[@]}" 2>/dev/null \
   -type f -mtime -"$DAYS" | cap
 sub "systemd units referencing tmp/curl/base64"
 grep -rlsE '(/tmp/|/dev/shm|base64|curl |wget )' /etc/systemd/system 2>/dev/null | cap
@@ -351,7 +394,8 @@ grep -sE '^(PermitRootLogin|PasswordAuthentication|Port|AuthorizedKeysFile)' /et
 find /etc/sudoers.d -type f -mtime -"$DAYS" 2>/dev/null | cap
 sub "accounts with UID 0 or shell access added recently"
 awk -F: '$3==0 {print "UID0: " $0}' /etc/passwd | cap
-find /etc/passwd /etc/shadow /etc/group -mtime -"$DAYS" 2>/dev/null | cap
+find /etc/passwd /etc/shadow /etc/group -mtime -"$DAYS" \
+  -printf 'MODIFIED in last '"$DAYS"'d: %TY-%Tm-%Td %p\n' 2>/dev/null | cap
 
 sub "SUID binaries in unusual locations"
 find /tmp /var/tmp /dev/shm /home /var/www -xdev -perm -4000 -type f 2>/dev/null | cap
