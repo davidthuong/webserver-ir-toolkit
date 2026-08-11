@@ -33,7 +33,7 @@ bao giờ đọc `.htaccess`. Xem [MITIGATION.md](MITIGATION.md).
 
 | Tài liệu | Dùng để làm gì |
 |---|---|
-| [webshell-triage.sh](../../webshell-triage.sh) | Scanner chỉ đọc, 18 section |
+| [webshell-triage.sh](../../webshell-triage.sh) | Scanner chỉ đọc, 19 section |
 | [PLAYBOOK.md](PLAYBOOK.md) | Quy trình 8 phase, đúng thứ tự |
 | [MITIGATION.md](MITIGATION.md) | Chặn thực thi PHP — công thức đúng cho từng web server |
 | [HARDENING.md](HARDENING.md) | Phòng ngừa, xếp theo hiệu quả trên công sức |
@@ -58,8 +58,8 @@ Tuỳ chọn:
 ```
 
 Đọc **section 2B** trước — nó cho biết web server nào đang thực sự phục vụ request, và điều đó
-quyết định mọi biện pháp giảm thiểu khả dụng. Rồi tới **section 5** (persistence) và
-**14** (đường vào).
+quyết định mọi biện pháp giảm thiểu khả dụng. Rồi tới **section 5** (persistence), **16**
+(chống dọn và inject client-side) và **14** (đường vào).
 
 ---
 
@@ -78,6 +78,15 @@ Cron của user (kể cả `crontab.conf` của DirectAdmin và ScheduledTasks c
 **Môi trường**
 Web server và bản (edition), `.htaccess` có được đọc hay không, các PHP binary theo từng version
 và version nào có extension bảo vệ, tình trạng scanner đã cài.
+
+**Chống dọn và inject client-side**
+File PHP mà chính chủ sở hữu không ghi được — backdoor tự đặt lại `chmod 0444` mỗi lần được gọi
+sẽ sống sót qua mọi scanner dọn bằng cách xoá rỗng nội dung. File PHP 0 byte — không phải rác mà
+là dấu vết scanner đó để lại, và mốc thời gian của chúng dựng lại được timeline tái nhiễm.
+`mu-plugins` và drop-in của WordPress — nạp mọi request và không bao giờ hiện trong danh sách
+plugin. Thư mục plugin không có plugin header. Thư mục chèn vào trong cây core. JavaScript tự
+giải mã bằng XOR key lặp rồi chèn thẻ script, ghép chuỗi từ thuộc tính `.name` của built-in để vô
+hiệu hoá tìm kiếm từ khoá, hoặc tải payload từ smart contract blockchain thay vì từ domain.
 
 **Truy vết**
 Đối chiếu access log với mtime của shell, endpoint task của component CMS và status code chúng

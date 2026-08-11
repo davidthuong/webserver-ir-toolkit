@@ -185,7 +185,7 @@ case "$HTACCESS" in
     log "  !! Rules in .htaccess are SILENTLY IGNORED on $WEBSRV."
     log "  !! <FilesMatch> / 'Require all denied' will NOT block anything."
     log "  !! Mitigate at the web server config layer, or via ModSecurity/WAF."
-    log "  !! See docs: MITIGATION.md"
+    log "  !! See docs: MITIGATION.md (section 16 covers client-side injection)"
     ;;
   yes*)
     log "  AllowOverride must include AuthConfig or Limit for 'Require' to work;"
@@ -610,7 +610,128 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-sec "16. SUMMARY"
+sec "16. ANTI-CLEANUP, AUTOLOADERS AND CLIENT-SIDE INJECTION"
+# This section exists because sections 6-10 miss a whole class of compromise:
+# code that is not a PHP shell. It looks for files that resist automated cleanup,
+# directories that load without ever appearing in a CMS admin screen, and
+# JavaScript injected to attack the site's visitors rather than the server.
+if [ "${#ROOTS[@]}" -gt 0 ]; then
+
+  sub "PHP files the OWNER cannot write -- resists scanner cleanup"
+  # A read-only PHP file survives scanners that neutralise malware by emptying it
+  # rather than deleting it. Some backdoors re-apply chmod 0444 to themselves on
+  # every request, so a manual chmod is reverted; only removal works.
+  # Excluded below: CMS config files that are meant to be read-only.
+  find "${ROOTS[@]}" -type f -name '*.php' ! -perm -u+w \
+    ! -name 'wp-config.php' ! -name 'configuration.php' ! -name 'settings.php' \
+    -printf '%m %u:%g %TY-%Tm-%Td %p\n' 2>/dev/null | cap
+
+  sub "PHP files writable by ANY user on the system"
+  find "${ROOTS[@]}" -type f -name '*.php' -perm -o+w \
+    -printf '%m %u:%g %p\n' 2>/dev/null | cap
+
+  sub "zero-byte PHP -- trace of a scanner that trimmed instead of deleting"
+  # An empty .php file with a random name is not junk: it marks a file that was
+  # malicious and got emptied. Their timestamps reconstruct the reinfection
+  # timeline, including for sites that look clean today.
+  find "${ROOTS[@]}" -type f -size 0 \( -name '*.php' -o -name '*.phtml' \) \
+    -printf '%TY-%Tm-%Td %TH:%TM  %p\n' 2>/dev/null | sort | cap
+
+  sub "random-name .txt beside PHP -- encrypted payload / proxy list pattern"
+  find "${ROOTS[@]}" -type f -regextype posix-extended \
+    -regex '.*/[a-z]{8,12}\.txt$' -printf '%TY-%Tm-%Td %8s %p\n' 2>/dev/null | cap
+
+  sub "WordPress auto-loaders -- run on every request, absent from the plugin list"
+  # mu-plugins and drop-ins load with no activation step and are invisible in
+  # wp-admin, which makes them a preferred place to hide a persistent injector.
+  for r in "${ROOTS[@]}"; do
+    [ -d "$r/wp-content" ] || continue
+    if [ -d "$r/wp-content/mu-plugins" ]; then
+      ls -la "$r/wp-content/mu-plugins/" 2>/dev/null | sed "s|^|  [$r] |" | cap
+    fi
+    for dropin in object-cache.php db.php advanced-cache.php sunrise.php maintenance.php; do
+      [ -f "$r/wp-content/$dropin" ] && \
+        log "  DROP-IN  $(stat -c '%m %TY-%Tm-%Td %s' "$r/wp-content/$dropin" 2>/dev/null)  $r/wp-content/$dropin"
+    done
+  done
+
+  sub "plugin directories with no valid plugin header -- fake plugins"
+  for r in "${ROOTS[@]}"; do
+    [ -d "$r/wp-content/plugins" ] || continue
+    for d in "$r/wp-content/plugins"/*/; do
+      [ -d "$d" ] || continue
+      if ! grep -rlqs --include='*.php' --max-count=1 'Plugin Name:' "$d" 2>/dev/null; then
+        log "  NO HEADER  $(stat -c '%TY-%Tm-%Td' "$d" 2>/dev/null)  $d"
+      fi
+    done
+  done
+
+  sub "unexpected directories inside wp-includes / wp-admin"
+  # Injecting a subdirectory into a core tree hides files among thousands of
+  # legitimate ones and survives plugin and theme reinstalls.
+  for r in "${ROOTS[@]}"; do
+    for core in wp-includes wp-admin; do
+      [ -d "$r/$core" ] || continue
+      find "$r/$core" -type d -name 'wp' -o -type d -name 'wp-*' 2>/dev/null \
+        | grep -vE '/(wp-includes|wp-admin)$' | sed "s|^|  |" | cap
+    done
+  done
+
+  sub "client-side JS injection: repeating-key XOR decoder"
+  # Pattern: base64 -> XOR with a repeating key -> inject as a <script> element.
+  # No literal payload appears in the file, so PHP shell signatures never match it.
+  grep -rlE 'charCodeAt\([^)]*\)[[:space:]]*\^[[:space:]]*[_a-zA-Z0-9$]+\.charCodeAt' \
+    "${ROOTS[@]}" --include='*.php' --include='*.js' --include='*.html' 2>/dev/null | cap
+
+  sub "script element appended to documentElement (not head/body)"
+  # Legitimate loaders append to head or body. Appending to documentElement is
+  # rare outside injected code, which makes it a low-noise discriminator --
+  # verified not to match jQuery's DOMEval, present on every WordPress site.
+  # Note: do NOT try to match createElement and the code assignment in one
+  # expression. A ';' separates the two statements in real samples, so any
+  # single-line pattern misses them.
+  grep -rlE 'documentElement\.appendChild' \
+    "${ROOTS[@]}" --include='*.php' --include='*.js' 2>/dev/null | cap
+
+  sub "obfuscation via built-in .name properties (defeats string signatures)"
+  # Strings such as "eval" are assembled from Array.name, RegExp.name and similar,
+  # so the file contains no searchable keyword at all.
+  # The character class here must be written (\[|\.) -- a bracket expression
+  # containing '[.' opens a POSIX collating symbol and makes grep error out,
+  # which with stderr suppressed looks exactly like "nothing found".
+  grep -rlE '(RegExp|Array|Boolean|CustomEvent|Path2D|NodeList|Function)\.name[[:space:]]*(\[|\.)' \
+    "${ROOTS[@]}" --include='*.php' --include='*.js' 2>/dev/null | cap
+
+  sub "blockchain payload hosting (EtherHiding) -- literal indicators only"
+  # A 40-hex EVM contract address plus JSON-RPC method names means the second
+  # stage is fetched from a smart contract. There is no C2 domain to block and
+  # the operator rewrites the payload with one transaction, so domain
+  # blocklists do not help; the contract address is the indicator to record.
+  #
+  # LIMITATION, measured against a live sample: when the loader is XOR-encoded,
+  # neither the address nor the RPC method names exist on disk -- both are
+  # assembled at runtime from built-in .name properties. Those variants are
+  # caught by the XOR decoder check above, not here. A quiet result in this
+  # subsection therefore proves nothing on its own.
+  grep -rlE '0x[a-fA-F0-9]{40}' "${ROOTS[@]}" \
+    --include='*.php' --include='*.js' 2>/dev/null | cap
+  grep -rhoE 'eth_call|eth_getBlockByNumber|jsonrpc|bsc-dataseed|binance\.org|infura|alchemy\.com' \
+    "${ROOTS[@]}" --include='*.php' --include='*.js' 2>/dev/null | sort | uniq -c | sort -rn | head -10 | cap
+
+  sub "cloaking: content served conditionally to hide from the site owner"
+  grep -rlE 'HTTP_REFERER[^;]{0,80}(google|bing|yandex)|is_user_logged_in\(\)[[:space:]]*\)?[[:space:]]*(\?|\|\|)|HTTP_USER_AGENT[^;]{0,60}(iPhone|Android|Mobile)' \
+    "${ROOTS[@]}" --include='*.php' 2>/dev/null | cap
+  log ""
+  log "  Cloaked injections commonly show only to search-engine referrers, only on"
+  log "  mobile, only once per visitor IP, and never to a logged-in administrator."
+  log "  Verify from outside with a spoofed request, not by opening the site:"
+  log "    curl -sL -A '<mobile UA>' -e 'https://www.google.com/' https://site/ \\"
+  log "      | grep -oE '<script[^>]*>' | sort -u"
+  log "  Compare against a plain request -- the difference is what was injected."
+fi
+
+# -----------------------------------------------------------------------------
+sec "17. SUMMARY"
 log "panel:                      $PANEL"
 log "webroots scanned:           ${#ROOTS[@]}"
 log "signature-matched files:    $NC"

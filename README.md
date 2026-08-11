@@ -35,7 +35,7 @@ web server that never reads `.htaccess`. See [MITIGATION.md](docs/en/MITIGATION.
 
 | Document | Purpose |
 |---|---|
-| [webshell-triage.sh](webshell-triage.sh) | Read-only scanner, 18 sections |
+| [webshell-triage.sh](webshell-triage.sh) | Read-only scanner, 19 sections |
 | [PLAYBOOK.md](docs/en/PLAYBOOK.md) | 8-phase response procedure, in order |
 | [MITIGATION.md](docs/en/MITIGATION.md) | Blocking PHP execution — the correct recipe per web server |
 | [HARDENING.md](docs/en/HARDENING.md) | Prevention, ranked by effect over effort |
@@ -60,8 +60,8 @@ Options:
 ```
 
 Read section **2B** first — it tells you which web server is actually serving requests, which
-determines every mitigation available to you. Then section **5** (persistence) and **14**
-(entry point).
+determines every mitigation available to you. Then section **5** (persistence), **16**
+(anti-cleanup and client-side injection) and **14** (entry point).
 
 ---
 
@@ -80,6 +80,16 @@ SSH `authorized_keys`, sudoers, UID 0 accounts, `.forward` backdoors, mail queue
 **Environment**
 Web server and edition, whether `.htaccess` is honored, PHP binaries per version and whether a
 hardening extension covers each one, installed scanner state.
+
+**Anti-cleanup and client-side injection**
+PHP files their own owner cannot write — a backdoor that re-applies `chmod 0444` to itself on
+every request survives any scanner that neutralises malware by emptying it. Zero-byte PHP files,
+which are not junk but the trace such a scanner leaves, and whose timestamps reconstruct a
+reinfection timeline. WordPress `mu-plugins` and drop-ins, which load on every request and never
+appear in the admin plugin list. Plugin directories with no plugin header. Injected
+subdirectories inside core trees. JavaScript that decodes itself with a repeating-key XOR and
+injects a script element, assembles strings from built-in `.name` properties to defeat keyword
+search, or fetches its payload from a blockchain contract instead of a domain.
 
 **Attribution**
 Access log correlation against shell mtimes, CMS component task endpoints and the status codes
