@@ -55,12 +55,55 @@ Tuỳ chọn:
 --days N        cửa sổ thời gian cho phần "file mới sửa" (mặc định 30)
 --root PATH     thêm webroot nếu script không tự tìm ra
 --out FILE      chỗ ghi báo cáo (mặc định /root/triage-<host>-<time>.txt)
+--checksums     đối chiếu package WordPress với wordpress.org (chậm, check mạnh nhất)
 --http          gọi thêm HTTP tới từng site (section 17, mặc định tắt)
+--no-nice       không hạ ưu tiên CPU/IO
 ```
 
 Đọc **section 2B** trước — nó cho biết web server nào đang thực sự phục vụ request, và điều đó
 quyết định mọi biện pháp giảm thiểu khả dụng. Rồi tới **section 5** (persistence), **16**
 (chống dọn và inject client-side) và **14** (đường vào).
+
+---
+
+## Chạy trên server production
+
+An toàn, với một lưu ý — và lưu ý đó về **tải**, không phải về hư hỏng.
+
+**Không có gì trong webroot bị sửa.** Không `rm`, `mv`, `chmod`, `chown`, không sửa file tại chỗ.
+File duy nhất được ghi là report, nằm trong `/root`. Chính đảm bảo này là lý do script đáng chạy
+giữa lúc đang xử lý sự cố, và nó được giữ có chủ đích — xem [CONTRIBUTING.md](../../CONTRIBUTING.md).
+
+**Chi phí thực sự là I/O.** Script đọc toàn bộ webroot trên máy. Trên shared server có hàng
+trăm account, riêng việc page cache bị đẩy đã đủ làm MySQL chậm thấy rõ, dù không hề có thao tác
+ghi nào. Ba cơ chế xử lý chuyện đó:
+
+| Cơ chế | Chi tiết |
+|---|---|
+| Ưu tiên thấp | Tự re-exec dưới `nice -n 19 ionice -c3`. Tắt bằng `--no-nice` |
+| Một lượt, không phải mỗi file một lượt | Ứng viên được tìm bằng **một** `grep -r` cho mỗi webroot. Pipeline theo từng file trên ~100 account sẽ là hàng trăm nghìn lần spawn process — biến một báo cáo chỉ đọc thành sự cố do chính mình gây ra |
+| Check chậm là opt-in | `--checksums` (cần mạng, 10–30 giây mỗi WordPress) và `--http` (gọi ra ngoài) đều mặc định tắt |
+
+**Khuyên dùng cho lần chạy đầu:**
+
+```bash
+# giới hạn 1 site trước, xem report ra sao
+sudo bash webshell-triage.sh --root /home/user1/domains/site.com --days 60
+
+# rồi toàn bộ máy, giờ thấp điểm
+sudo bash webshell-triage.sh --days 60
+
+# thêm check mạnh nhất khi đã biết thời gian chạy chấp nhận được
+sudo bash webshell-triage.sh --days 60 --checksums
+```
+
+Mở `uptime` ở một shell khác để theo dõi trong lần chạy đầy đủ đầu tiên. Nếu load vượt mức máy chịu
+được thì **cứ dừng** — không có gì bị bỏ lại ở trạng thái nửa vời, vì ngay từ đầu không có gì bị thay đổi.
+
+**`--http` cần quyết định riêng.** Nó gọi HTTP ra từng site. Giữa lúc đang xử lý sự cố thì có
+thể bị chính rule khoanh vùng của bạn chặn, và attacker đang theo dõi site sẽ thấy. Nhưng nó cũng
+là check **duy nhất** thấy được inject nằm trong database hoặc trong cấu hình web server —
+quét file bao nhiêu cũng không ra.
 
 ---
 

@@ -6,22 +6,49 @@
 #  This script NEVER deletes, moves, chmods or edits anything.
 #  It only reads and writes one report file.
 #
+#  RUNNING THIS ON PRODUCTION
+#  Safe to do, with one caveat that is about load, not about damage. Nothing in
+#  the webroot is modified; the only file written is the report, under /root.
+#  But the script reads every webroot on the host, so on a shared server the cost
+#  is disk I/O and page-cache pressure -- enough to slow MySQL even though no
+#  write ever happens. Mitigations already built in:
+#    - re-execs itself under nice -n 19 / ionice -c3   (disable with --no-nice)
+#    - candidate files are found with one grep pass per webroot, never a pipeline
+#      per file, which on ~100 accounts would be hundreds of thousands of spawns
+#    - the two slow or network-dependent checks are opt-in: --checksums, --http
+#  Prefer off-peak hours for the first run. Scope it with --root while testing.
+#
 #  Usage:
 #     sudo bash webshell-triage.sh                 # scan auto-detected webroots
 #     sudo bash webshell-triage.sh --days 14       # "recent changes" window
 #     sudo bash webshell-triage.sh --root /home/user1/domains/site.com
 #     sudo bash webshell-triage.sh --out /root/report.txt
+#     sudo bash webshell-triage.sh --checksums     # verify WP packages (slow, best check)
 #     sudo bash webshell-triage.sh --http          # also fetch each site (section 17)
+#     sudo bash webshell-triage.sh --no-nice       # do not lower priority
 #
 #  If you get "bad interpreter: ^M":  sed -i 's/\r$//' webshell-triage.sh
 # =============================================================================
 
 set -u
 
+# --- production safety: run at the lowest CPU and I/O priority -----------------
+# This script walks every webroot on the host. On a shared server with a hundred
+# accounts that is a great deal of I/O, and the page-cache pressure alone is
+# enough to slow MySQL noticeably even though nothing is being written.
+# Re-exec under nice/ionice so that examining the sites cannot degrade them.
+# Skip with --no-nice, or by setting IR_NICED=1.
+case " $* " in *" --no-nice "*) IR_NICED=1 ;; esac
+if [ "${IR_NICED:-0}" != "1" ] && [ -f "$0" ] \
+   && command -v nice >/dev/null 2>&1 && command -v ionice >/dev/null 2>&1; then
+  IR_NICED=1 exec nice -n 19 ionice -c3 bash "$0" "$@"
+fi
+
 DAYS=30
 EXTRA_ROOTS=()
 OUT=""
 DO_HTTP=0            # --http: fetch each site over the network (off by default)
+DO_SUMS=0            # --checksums: verify WordPress packages (slow, needs network)
 MAXHITS=400          # cap lines per section so the report stays readable
 
 while [ $# -gt 0 ]; do
@@ -30,6 +57,8 @@ while [ $# -gt 0 ]; do
     --root)  EXTRA_ROOTS+=("$2"); shift 2 ;;
     --out)   OUT="$2"; shift 2 ;;
     --http)  DO_HTTP=1; shift ;;
+    --checksums) DO_SUMS=1; shift ;;
+    --no-nice)   shift ;;          # already handled before arg parsing
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1"; exit 1 ;;
   esac
@@ -748,23 +777,26 @@ if [ "${#ROOTS[@]}" -gt 0 ]; then
   # run. A legitimately embedded PNG icon measured 1,467. The 4000 threshold sits
   # between them. Base64-embedded fonts can legitimately exceed it, so treat a
   # hit as "read this file", not as a verdict.
-  for r in "${ROOTS[@]}"; do
-    find "$r" -type f -name '*.php' -size +4k 2>/dev/null | while IFS= read -r f; do
-      L=$(grep -oE '[A-Za-z0-9+/]{4000,}' "$f" 2>/dev/null | awk '{print length($0)}' | sort -rn | head -1)
-      [ -n "$L" ] && log "  base64 run ${L}c  $(stat -c '%TY-%Tm-%Td %8s' "$f" 2>/dev/null)  $f"
-    done
-  done | cap
+  #
+  # Candidates are found in ONE grep pass per webroot, then measured only for the
+  # few files that matched. Never loop per file here: a per-file pipeline on a
+  # shared host with ~100 accounts means hundreds of thousands of process spawns,
+  # which turns a read-only report into a self-inflicted outage.
+  grep -rlE '[A-Za-z0-9+/]{4000,}' "${ROOTS[@]}" --include='*.php' 2>/dev/null \
+    | head -n "$MAXHITS" | while IFS= read -r f; do
+        L=$(grep -oE '[A-Za-z0-9+/]{4000,}' "$f" 2>/dev/null | awk '{ if (length($0)>m) m=length($0) } END{print m+0}')
+        log "  base64 run ${L}c  $(stat -c '%TY-%Tm-%Td %8s' "$f" 2>/dev/null)  $f"
+      done
 
   sub "PHP files with an extremely long single line"
   # Same sample: longest line 56,101 characters against 71 for ordinary PHP.
   # Obfuscators emit one enormous line because newlines cost them nothing and
   # cost a reader everything.
-  for r in "${ROOTS[@]}"; do
-    find "$r" -type f -name '*.php' -size +4k 2>/dev/null | while IFS= read -r f; do
-      M=$(awk 'BEGIN{m=0}{if(length($0)>m)m=length($0)}END{print m}' "$f" 2>/dev/null)
-      [ "${M:-0}" -gt 5000 ] && log "  maxline ${M}c  $(stat -c '%TY-%Tm-%Td %8s' "$f" 2>/dev/null)  $f"
-    done
-  done | cap
+  grep -rlE '.{5000,}' "${ROOTS[@]}" --include='*.php' 2>/dev/null \
+    | head -n "$MAXHITS" | while IFS= read -r f; do
+        M=$(awk '{ if (length($0)>m) m=length($0) } END{print m+0}' "$f" 2>/dev/null)
+        log "  maxline ${M}c  $(stat -c '%TY-%Tm-%Td %8s' "$f" 2>/dev/null)  $f"
+      done
 
   sub "WordPress package integrity -- the strongest check available"
   # This is the one check that finds an UNKNOWN family. It does not ask what the
@@ -772,7 +804,13 @@ if [ "${#ROOTS[@]}" -gt 0 ]; then
   # Any modified core file, and any file present in a plugin directory that is
   # not part of that plugin's official package, is reported regardless of
   # content, obfuscation or novelty.
-  if have wp; then
+  if have wp && [ "$DO_SUMS" = "1" ]; then
+    WPCOUNT=0
+    for r in "${ROOTS[@]}"; do
+      [ -f "$r/wp-includes/version.php" ] && WPCOUNT=$((WPCOUNT+1))
+    done
+    log "  verifying $WPCOUNT WordPress install(s) -- this fetches checksums from"
+    log "  wordpress.org and hashes every core file, so allow roughly 10-30s each."
     for r in "${ROOTS[@]}"; do
       [ -f "$r/wp-includes/version.php" ] || continue
       log "  --- $r"
@@ -781,6 +819,17 @@ if [ "${#ROOTS[@]}" -gt 0 ]; then
       wp --path="$r" --allow-root --skip-plugins --skip-themes plugin verify-checksums --all 2>&1 \
         | head -40 | sed 's/^/    /'
     done | cap
+  elif have wp; then
+    log "  [SKIPPED -- pass --checksums to enable]"
+    log ""
+    log "  !! This is the STRONGEST check in the whole script and it is off by"
+    log "  !! default only because it is slow and needs network: it downloads"
+    log "  !! checksums from wordpress.org and hashes every core file, roughly"
+    log "  !! 10-30 seconds per install. On a host with many sites that is minutes."
+    log "  !! Run it. Nothing else here finds a malware family nobody has described."
+    log "  !! Or run it per site, outside this script:"
+    log "  !!   wp --path=<webroot> --allow-root core verify-checksums"
+    log "  !!   wp --path=<webroot> --allow-root plugin verify-checksums --all"
   else
     log "  !! wp-cli is NOT installed, and for WordPress hosts this is the single"
     log "  !! most valuable check you are missing. It finds families no pattern knows."
@@ -795,13 +844,11 @@ if [ "${#ROOTS[@]}" -gt 0 ]; then
   log "    diff -rq --exclude=images --exclude=cache <clean-unpack>/ <webroot>/"
 
   sub "files whose extension does not match their content"
-  # An extension is a claim, not a fact. Reading the first bytes is the check.
-  for r in "${ROOTS[@]}"; do
-    find "$r" -type f \( -iname '*.txt' -o -iname '*.log' -o -iname '*.css' -o -iname '*.json' \) \
-      -size +0 2>/dev/null | head -3000 | while IFS= read -r f; do
-      head -c 256 "$f" 2>/dev/null | grep -qaE '<\?php|<\?=' && log "  PHP inside $f"
-    done
-  done | cap
+  # An extension is a claim, not a fact. One grep pass, not one per file.
+  grep -rlaE '<\?php|<\?=' "${ROOTS[@]}" \
+    --include='*.txt' --include='*.log' --include='*.css' --include='*.json' \
+    --include='*.ini' --include='*.md' 2>/dev/null \
+    | sed 's/^/  PHP inside  /' | cap
 
   if [ "$DO_HTTP" = "1" ]; then
     sub "black-box fetch: injection served to visitors but absent from files"

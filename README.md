@@ -57,12 +57,56 @@ Options:
 --days N        window for the "recently modified" checks (default 30)
 --root PATH     add a webroot the script did not auto-detect
 --out FILE      report destination (default /root/triage-<host>-<time>.txt)
+--checksums     verify WordPress packages against wordpress.org (slow, best check)
 --http          also fetch each site over the network (section 17, off by default)
+--no-nice       do not lower CPU/IO priority
 ```
 
 Read section **2B** first — it tells you which web server is actually serving requests, which
 determines every mitigation available to you. Then section **5** (persistence), **16**
 (anti-cleanup and client-side injection) and **14** (entry point).
+
+---
+
+## Running this on a production server
+
+Safe, with one caveat that is about load rather than damage.
+
+**Nothing in any webroot is modified.** No `rm`, `mv`, `chmod`, `chown` or in-place edit. The
+only file written is the report, under `/root`. That guarantee is the reason the script is
+worth running mid-incident at all, and it is enforced deliberately — see
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
+**The real cost is I/O.** The script reads every webroot on the host. On a shared server with
+a hundred accounts, the page-cache pressure alone is enough to slow MySQL noticeably even
+though nothing is ever written. Three things address this:
+
+| Mitigation | Detail |
+|---|---|
+| Priority | Re-execs itself under `nice -n 19 ionice -c3`. Disable with `--no-nice` |
+| One pass, not one per file | Candidates are found with a single `grep -r` per webroot. A per-file pipeline across ~100 accounts would mean hundreds of thousands of process spawns — that turns a read-only report into a self-inflicted outage |
+| Slow checks are opt-in | `--checksums` (network, 10–30s per WordPress install) and `--http` (outbound requests) are both off by default |
+
+**Practical advice for the first run:**
+
+```bash
+# scope it to one site first and see what the report looks like
+sudo bash webshell-triage.sh --root /home/user1/domains/site.com --days 60
+
+# then the whole host, off-peak
+sudo bash webshell-triage.sh --days 60
+
+# add the strongest check once you know the runtime is acceptable
+sudo bash webshell-triage.sh --days 60 --checksums
+```
+
+Watch `uptime` in another shell during the first full run. If load climbs beyond what the host
+tolerates, stop it — nothing is left in a partial state, because nothing was being changed.
+
+**`--http` deserves a separate decision.** It makes outbound requests to each site. During an
+active incident that may be blocked by your own containment rules, and it is visible to an
+attacker watching the sites. It is also the only check that can see an injection stored in the
+database or in web server config, which no amount of file scanning will find.
 
 ---
 
