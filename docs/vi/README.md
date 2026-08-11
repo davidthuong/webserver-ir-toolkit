@@ -8,6 +8,8 @@ LiteSpeed Enterprise.
 kiểm tra.** Scanner chỉ đọc và ghi ra một file báo cáo. Mọi bước có tính phá hoại đều để cho
 người đọc báo cáo tự quyết định.
 
+Đừng tin lời — chạy `bash tools/verify-readonly.sh` để tự kiểm chứng trên server của mình.
+
 🇬🇧 **[English documentation](../../README.md)**
 
 ---
@@ -88,7 +90,7 @@ ghi nào. Ba cơ chế xử lý chuyện đó:
 
 ```bash
 # giới hạn 1 site trước, xem report ra sao
-sudo bash webshell-triage.sh --root /home/user1/domains/site.com --days 60
+sudo bash webshell-triage.sh --root /home/user1/domains/site.com/public_html --days 60
 
 # rồi toàn bộ máy, giờ thấp điểm
 sudo bash webshell-triage.sh --days 60

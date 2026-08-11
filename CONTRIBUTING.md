@@ -36,6 +36,21 @@ things worse is why they are willing to.
 
 Cleanup, quarantine and remediation belong in documentation, where a human decides.
 
+**Verify that guarantee rather than trusting it, and re-verify after any change you make.**
+`bash tools/verify-readonly.sh` builds a throwaway webroot, snapshots every hash, permission
+bit and directory entry, runs the scanner against that tree alone, and diffs.
+
+| Exit | Meaning |
+|---|---|
+| 0 | pass — the tree came back byte-identical |
+| 1 | fail — a file that existed before the scan is gone; the guarantee is broken |
+| 2 | inconclusive — the environment interfered, so the run proved nothing either way |
+
+Run it on a server, not a workstation. Endpoint antivirus quarantines the deliberately
+malware-shaped files the test creates, and a file your AV removed looks exactly like one the
+scanner removed — which is why the script tracks paths that were already unreadable before the
+scan started and excludes them from the verdict instead of reporting a false failure.
+
 **Signature changes must be tested both ways.** If you touch the `$SIG` heredoc, verify
 against real shell forms *and* against clean code:
 

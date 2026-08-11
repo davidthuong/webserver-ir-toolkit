@@ -8,6 +8,8 @@ OpenLiteSpeed and LiteSpeed Enterprise.
 being examined.** The scanner reads and writes one report. Every destructive step is left to
 a human who has read the report.
 
+Do not take that on trust — `bash tools/verify-readonly.sh` proves it on your own host.
+
 🇻🇳 **[Tài liệu tiếng Việt](docs/vi/README.md)**
 
 ---
@@ -91,7 +93,7 @@ though nothing is ever written. Three things address this:
 
 ```bash
 # scope it to one site first and see what the report looks like
-sudo bash webshell-triage.sh --root /home/user1/domains/site.com --days 60
+sudo bash webshell-triage.sh --root /home/user1/domains/site.com/public_html --days 60
 
 # then the whole host, off-peak
 sudo bash webshell-triage.sh --days 60
