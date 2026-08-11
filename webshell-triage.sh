@@ -74,6 +74,22 @@ if [ "$(id -u)" != "0" ]; then
   echo "WARNING: not running as root. Many checks will be incomplete."
 fi
 
+# Artifacts worth aggregating are collected as the sections run, so the summary
+# can answer the two questions every administrator asks first -- how many sites,
+# and since when -- without a second pass over the disk.
+ARTIFACTS=$(mktemp) || exit 1
+
+# Pass-through filter: prints its input unchanged, and records any absolute path
+# it sees. Handles bare paths and "some prefix /abs/path" lines alike.
+art() {
+  local l p
+  while IFS= read -r l; do
+    printf '%s\n' "$l"
+    p=${l##* }
+    case "$p" in /*) printf '%s\n' "$p" >> "$ARTIFACTS" ;; esac
+  done
+}
+
 log()  { printf '%s\n' "$*" | tee -a "$OUT" ; }
 sec()  { log ""; log "==============================================================="; \
          log "## $*"; log "==============================================================="; }
@@ -741,22 +757,22 @@ if [ "${#ROOTS[@]}" -gt 0 ]; then
   # Excluded below: CMS config files that are meant to be read-only.
   find "${ROOTS[@]}" -type f -name '*.php' ! -perm -u+w \
     ! -name 'wp-config.php' ! -name 'configuration.php' ! -name 'settings.php' \
-    -printf '%m %u:%g %TY-%Tm-%Td %p\n' 2>/dev/null | cap
+    -printf '%m %u:%g %TY-%Tm-%Td %p\n' 2>/dev/null | art | cap
 
   sub "PHP files writable by ANY user on the system"
   find "${ROOTS[@]}" -type f -name '*.php' -perm -o+w \
-    -printf '%m %u:%g %p\n' 2>/dev/null | cap
+    -printf '%m %u:%g %p\n' 2>/dev/null | art | cap
 
   sub "zero-byte PHP -- trace of a scanner that trimmed instead of deleting"
   # An empty .php file with a random name is not junk: it marks a file that was
   # malicious and got emptied. Their timestamps reconstruct the reinfection
   # timeline, including for sites that look clean today.
   find "${ROOTS[@]}" -type f -size 0 \( -name '*.php' -o -name '*.phtml' \) \
-    -printf '%TY-%Tm-%Td %TH:%TM  %p\n' 2>/dev/null | sort | cap
+    -printf '%TY-%Tm-%Td %TH:%TM  %p\n' 2>/dev/null | sort | art | cap
 
   sub "random-name .txt beside PHP -- encrypted payload / proxy list pattern"
   find "${ROOTS[@]}" -type f -regextype posix-extended \
-    -regex '.*/[a-z]{8,12}\.txt$' -printf '%TY-%Tm-%Td %8s %p\n' 2>/dev/null | cap
+    -regex '.*/[a-z]{8,12}\.txt$' -printf '%TY-%Tm-%Td %8s %p\n' 2>/dev/null | art | cap
 
   sub "WordPress auto-loaders -- run on every request, absent from the plugin list"
   # mu-plugins and drop-ins load with no activation step and are invisible in
@@ -798,7 +814,7 @@ if [ "${#ROOTS[@]}" -gt 0 ]; then
   # Pattern: base64 -> XOR with a repeating key -> inject as a <script> element.
   # No literal payload appears in the file, so PHP shell signatures never match it.
   grep -rlE 'charCodeAt\([^)]*\)[[:space:]]*\^[[:space:]]*[_a-zA-Z0-9$]+\.charCodeAt' \
-    "${ROOTS[@]}" --include='*.php' --include='*.js' --include='*.html' 2>/dev/null | cap
+    "${ROOTS[@]}" --include='*.php' --include='*.js' --include='*.html' 2>/dev/null | art | cap
 
   sub "script element appended to documentElement (not head/body)"
   # Legitimate loaders append to head or body. Appending to documentElement is
@@ -808,7 +824,7 @@ if [ "${#ROOTS[@]}" -gt 0 ]; then
   # expression. A ';' separates the two statements in real samples, so any
   # single-line pattern misses them.
   grep -rlE 'documentElement\.appendChild' \
-    "${ROOTS[@]}" --include='*.php' --include='*.js' 2>/dev/null | cap
+    "${ROOTS[@]}" --include='*.php' --include='*.js' 2>/dev/null | art | cap
 
   sub "obfuscation via built-in .name properties (defeats string signatures)"
   # Strings such as "eval" are assembled from Array.name, RegExp.name and similar,
@@ -996,10 +1012,87 @@ fi
 # -----------------------------------------------------------------------------
 sec "18. SUMMARY"
 log "panel:                      $PANEL"
+log "web server:                 $WEBSRV   (.htaccess honored: $HTACCESS)"
 log "webroots scanned:           ${#ROOTS[@]}"
 log "signature-matched files:    $NC"
 log "candidate list file:        $CAND"
 log "full report:                $OUT"
+
+# --- aggregate the artifacts collected during the run -------------------------
+# Two questions get asked before any others: how many sites, and since when.
+# Both were previously left for the reader to derive by scrolling a few thousand
+# lines and correlating timestamps by eye, which is slow and easy to get wrong.
+ALL=$(mktemp)
+sort -u "$ARTIFACTS" 2>/dev/null | grep -E '^/' > "$ALL"
+# Signature hits belong in the same picture.
+[ -s "$CAND" ] && cat "$CAND" >> "$ALL"
+sort -u "$ALL" -o "$ALL" 2>/dev/null
+NART=$(grep -c . "$ALL" 2>/dev/null || echo 0)
+
+log ""
+log "== AFFECTED ACCOUNTS =========================================="
+log "artifacts collected: $NART"
+if [ "${NART:-0}" -gt 0 ]; then
+  # Derive the account from the path, which is far cheaper than a stat per file.
+  # DirectAdmin/cPanel: /home/<user>/...    Plesk: /var/www/vhosts/<domain>/...
+  sed -e 's|^/home/\([^/]*\)/.*|\1|' \
+      -e 's|^/var/www/vhosts/\([^/]*\)/.*|\1|' "$ALL" \
+    | grep -vE '^/' | sort | uniq -c | sort -rn \
+    | awk '{printf "  %-5s %s\n", $1, $2}' | cap
+  log ""
+  log "  Ranking is by artifact count, which is a proxy for how long an account has"
+  log "  been worked on rather than for severity. One live backdoor outranks twenty"
+  log "  emptied files -- read the accounts at the top first, but read all of them."
+else
+  log "  none -- see the caveat below before concluding the host is clean"
+fi
+
+log ""
+log "== INTRUSION TIMELINE ========================================="
+if [ "${NART:-0}" -gt 0 ]; then
+  TL=$(mktemp)
+  # One stat invocation per batch rather than per file.
+  xargs -a "$ALL" -d '\n' -r stat -c '%Y|%y|%n' 2>/dev/null | sort -n > "$TL"
+  if [ -s "$TL" ]; then
+    FIRST=$(head -1 "$TL" | cut -d'|' -f2 | cut -c1-19)
+    LAST=$(tail -1 "$TL" | cut -d'|' -f2 | cut -c1-19)
+    FEPOCH=$(head -1 "$TL" | cut -d'|' -f1)
+    case "${FEPOCH:-}" in
+      ''|*[!0-9]*) DAYSAGO="?" ;;      # empty or non-numeric would abort the arithmetic
+      *) DAYSAGO=$(( ( $(date +%s) - FEPOCH ) / 86400 )) ;;
+    esac
+    log "  EARLIEST artifact:  $FIRST   (~$DAYSAGO days ago)"
+    log "  LATEST artifact:    $LAST"
+    log ""
+    log "  The earliest timestamp is the floor on how long this has been going on,"
+    log "  not the date of entry. Emptied files keep the mtime they were emptied at,"
+    log "  and anything the attacker removed leaves no timestamp at all."
+    log ""
+    log "  oldest 12:"
+    head -12 "$TL" | awk -F'|' '{printf "    %s  %s\n", substr($2,1,19), $3}' | cap
+    log "  newest 12:"
+    tail -12 "$TL" | awk -F'|' '{printf "    %s  %s\n", substr($2,1,19), $3}' | cap
+    log ""
+    log "  A cluster of timestamps within minutes of each other is one intrusion"
+    log "  session. Clusters spread over months mean repeated re-entry, which means"
+    log "  the way in is still open -- cleaning without closing it repeats the cycle."
+  fi
+  rm -f "$TL"
+else
+  log "  no artifacts to date"
+fi
+rm -f "$ALL"
+
+log ""
+log "== WHAT A QUIET REPORT DOES AND DOES NOT MEAN ================="
+log "  Finding nothing here is not proof of a clean host. In this session's field"
+log "  use, three separate defects each made a real compromise look like a clean"
+log "  result: a panel misdetected from a leftover directory silently skipped the"
+log "  per-user crontab check; an FTP login check written for one daemon reported"
+log "  nothing on a host running the other; and 19 signature patterns all missed a"
+log "  live injector because it was PHP that merely echoed obfuscated JavaScript."
+log "  Corroborate with section 17's package verification (--checksums), which does"
+log "  not depend on anyone having described the malware first."
 log ""
 log "NEXT STEPS"
 log "  1. Do NOT delete yet. Archive evidence first:"
@@ -1010,6 +1103,6 @@ log "  3. Find the entry point in section 14 before cleaning, or it comes back."
 log "  4. Rotate ALL credentials: panel, FTP, MySQL, SSH keys, CMS admins, API keys."
 log "  5. If section 5 shows ld.so.preload, a UID-0 account, or modified system binaries,"
 log "     assume root compromise -> rebuild the server, migrate only data."
-rm -f "$SIG"
+rm -f "$SIG" "$ARTIFACTS"
 echo ""
 echo "Done. Report: $OUT"
