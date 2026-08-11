@@ -94,7 +94,7 @@ log()  { printf '%s\n' "$*" | tee -a "$OUT" ; }
 sec()  { log ""; log "==============================================================="; \
          log "## $*"; log "==============================================================="; }
 sub()  { log ""; log "-- $* --"; }
-cap()  { head -n "$MAXHITS" ; }
+cap()  { head -n "$MAXHITS" | tee -a "$OUT" ; }
 have() { command -v "$1" >/dev/null 2>&1 ; }
 
 log "webshell-triage.sh  host=$HOST  date=$(date)  window=${DAYS}d"
@@ -1033,11 +1033,18 @@ log ""
 log "== AFFECTED ACCOUNTS =========================================="
 log "artifacts collected: $NART"
 if [ "${NART:-0}" -gt 0 ]; then
-  # Derive the account from the path, which is far cheaper than a stat per file.
-  # DirectAdmin/cPanel: /home/<user>/...    Plesk: /var/www/vhosts/<domain>/...
-  sed -e 's|^/home/\([^/]*\)/.*|\1|' \
-      -e 's|^/var/www/vhosts/\([^/]*\)/.*|\1|' "$ALL" \
-    | grep -vE '^/' | sort | uniq -c | sort -rn \
+  # Derive the account from the path -- far cheaper than a stat per file.
+  # The patterns are deliberately unanchored at the front: a webroot reached via
+  # a symlink or a non-standard prefix still yields its account. Anchoring on
+  # ^/home dropped every such path silently, which is the wrong failure -- an
+  # artifact that cannot be attributed must still be counted somewhere.
+  # Last expression is the catch-all: anything unmatched collapses to its
+  # top-level directory (/tmp, /var/tmp, /dev/shm) rather than vanishing.
+  sed -E -e 's|.*/home/([^/]+)/domains/.*|\1|' \
+         -e 's|.*/home/([^/]+)/public_html.*|\1|' \
+         -e 's|^/var/www/vhosts/([^/]+)/.*|\1|' \
+         -e 's|^/([^/]+)/.*|/\1|' "$ALL" \
+    | sort | uniq -c | sort -rn \
     | awk '{printf "  %-5s %s\n", $1, $2}' | cap
   log ""
   log "  Ranking is by artifact count, which is a proxy for how long an account has"
@@ -1068,10 +1075,18 @@ if [ "${NART:-0}" -gt 0 ]; then
     log "  not the date of entry. Emptied files keep the mtime they were emptied at,"
     log "  and anything the attacker removed leaves no timestamp at all."
     log ""
-    log "  oldest 12:"
-    head -12 "$TL" | awk -F'|' '{printf "    %s  %s\n", substr($2,1,19), $3}' | cap
-    log "  newest 12:"
-    tail -12 "$TL" | awk -F'|' '{printf "    %s  %s\n", substr($2,1,19), $3}' | cap
+    NTL=$(grep -c . "$TL" 2>/dev/null || echo 0)
+    if [ "${NTL:-0}" -le 24 ]; then
+      # head -12 and tail -12 overlap below 24 entries, which reprints the oldest
+      # rows under a "newest" heading and makes the timeline read as nonsense.
+      log "  all $NTL, chronological:"
+      awk -F'|' '{printf "    %s  %s\n", substr($2,1,19), $3}' "$TL" | cap
+    else
+      log "  oldest 12:"
+      head -12 "$TL" | awk -F'|' '{printf "    %s  %s\n", substr($2,1,19), $3}' | cap
+      log "  newest 12:"
+      tail -12 "$TL" | awk -F'|' '{printf "    %s  %s\n", substr($2,1,19), $3}' | cap
+    fi
     log ""
     log "  A cluster of timestamps within minutes of each other is one intrusion"
     log "  session. Clusters spread over months mean repeated re-entry, which means"
