@@ -59,7 +59,7 @@ while [ $# -gt 0 ]; do
     --http)  DO_HTTP=1; shift ;;
     --checksums) DO_SUMS=1; shift ;;
     --no-nice)   shift ;;          # already handled before arg parsing
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1"; exit 1 ;;
   esac
 done
@@ -631,11 +631,20 @@ else
   log "no rpm/debsums available -- install debsums (apt) to verify binaries"
 fi
 sub "CMS core integrity, if WP-CLI is available"
+# Never with --allow-root: wp-cli loads the target site's wp-config.php, so on a
+# compromised site running it as root executes attacker PHP as root. Drop to the
+# directory owner, which grants only the privilege that code already had.
 if have wp; then
   for r in "${ROOTS[@]:-}"; do
     [ -f "$r/wp-config.php" ] || continue
-    log ">>> $r"
-    (cd "$r" && wp core verify-checksums --allow-root 2>&1 | head -20) | cap
+    owner=$(stat -c '%U' "$r" 2>/dev/null)
+    log ">>> $r   (as ${owner:-?})"
+    if [ -n "${owner:-}" ] && [ "$owner" != "root" ] && have sudo; then
+      sudo -u "$owner" -- wp --path="$r" core verify-checksums 2>&1 | head -20 | cap
+    else
+      log "    SKIPPED -- refusing to run wp-cli as root against a suspect site."
+      log "    Run manually:  sudo -u <siteuser> wp --path=$r core verify-checksums"
+    fi
   done
 else
   log "wp-cli not installed -- 'wp core verify-checksums' is the fastest WordPress check"
@@ -813,11 +822,29 @@ if [ "${#ROOTS[@]}" -gt 0 ]; then
     log "  wordpress.org and hashes every core file, so allow roughly 10-30s each."
     for r in "${ROOTS[@]}"; do
       [ -f "$r/wp-includes/version.php" ] || continue
-      log "  --- $r"
-      wp --path="$r" --allow-root --skip-plugins --skip-themes core verify-checksums 2>&1 \
-        | head -25 | sed 's/^/    /'
-      wp --path="$r" --allow-root --skip-plugins --skip-themes plugin verify-checksums --all 2>&1 \
-        | head -40 | sed 's/^/    /'
+      # Run as the site's own user, never as root.
+      #
+      # wp-cli always loads the target site's wp-config.php -- that is how it
+      # finds the database, and --skip-plugins/--skip-themes does not change it.
+      # On a site that is already compromised, wp-config.php is attacker-writable
+      # in practice, so `wp --allow-root` executes their PHP with root privileges.
+      # That turns an integrity check into privilege escalation, in exactly the
+      # situation the check exists for.
+      #
+      # Dropping to the directory owner grants the code only the privilege it
+      # already had, so there is nothing to escalate.
+      owner=$(stat -c '%U' "$r" 2>/dev/null)
+      log "  --- $r   (as ${owner:-root})"
+      if [ -n "${owner:-}" ] && [ "$owner" != "root" ] && have sudo; then
+        sudo -u "$owner" -- wp --path="$r" --skip-plugins --skip-themes \
+          core verify-checksums 2>&1 | head -25 | sed 's/^/    /'
+        sudo -u "$owner" -- wp --path="$r" --skip-plugins --skip-themes \
+          plugin verify-checksums --all 2>&1 | head -40 | sed 's/^/    /'
+      else
+        log "    !! cannot drop privileges (owner='${owner:-?}', sudo present=$(have sudo && echo yes || echo no))."
+        log "    !! SKIPPED rather than run wp-cli as root against a suspect site."
+        log "    !! Run it manually as that user:  sudo -u <user> wp --path=$r core verify-checksums"
+      fi
     done | cap
   elif have wp; then
     log "  [SKIPPED -- pass --checksums to enable]"
@@ -827,16 +854,18 @@ if [ "${#ROOTS[@]}" -gt 0 ]; then
     log "  !! checksums from wordpress.org and hashes every core file, roughly"
     log "  !! 10-30 seconds per install. On a host with many sites that is minutes."
     log "  !! Run it. Nothing else here finds a malware family nobody has described."
-    log "  !! Or run it per site, outside this script:"
-    log "  !!   wp --path=<webroot> --allow-root core verify-checksums"
-    log "  !!   wp --path=<webroot> --allow-root plugin verify-checksums --all"
+    log "  !! Or run it per site, outside this script -- as the SITE'S user, not root,"
+    log "  !! because wp-cli loads that site's wp-config.php and on a compromised"
+    log "  !! site that file runs attacker code with whatever privilege you gave it:"
+    log "  !!   sudo -u <siteuser> wp --path=<webroot> core verify-checksums"
+    log "  !!   sudo -u <siteuser> wp --path=<webroot> plugin verify-checksums --all"
   else
     log "  !! wp-cli is NOT installed, and for WordPress hosts this is the single"
     log "  !! most valuable check you are missing. It finds families no pattern knows."
     log "  !!   curl -sO https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar"
     log "  !!   install -m0755 wp-cli.phar /usr/local/bin/wp"
-    log "  !! Then: wp --path=<webroot> --allow-root core verify-checksums"
-    log "  !!       wp --path=<webroot> --allow-root plugin verify-checksums --all"
+    log "  !! Then, AS THE SITE USER (not root -- wp-cli loads their wp-config.php):"
+    log "  !!   sudo -u <siteuser> wp --path=<webroot> core verify-checksums"
   fi
   log ""
   log "  Joomla has no equivalent bundled command. Compare against a clean archive"
