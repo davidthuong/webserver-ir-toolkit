@@ -33,7 +33,7 @@ bao giờ đọc `.htaccess`. Xem [MITIGATION.md](MITIGATION.md).
 
 | Tài liệu | Dùng để làm gì |
 |---|---|
-| [webshell-triage.sh](../../webshell-triage.sh) | Scanner chỉ đọc, 19 section |
+| [webshell-triage.sh](../../webshell-triage.sh) | Scanner chỉ đọc, 20 section |
 | [PLAYBOOK.md](PLAYBOOK.md) | Quy trình 8 phase, đúng thứ tự |
 | [MITIGATION.md](MITIGATION.md) | Chặn thực thi PHP — công thức đúng cho từng web server |
 | [HARDENING.md](HARDENING.md) | Phòng ngừa, xếp theo hiệu quả trên công sức |
@@ -55,6 +55,7 @@ Tuỳ chọn:
 --days N        cửa sổ thời gian cho phần "file mới sửa" (mặc định 30)
 --root PATH     thêm webroot nếu script không tự tìm ra
 --out FILE      chỗ ghi báo cáo (mặc định /root/triage-<host>-<time>.txt)
+--http          gọi thêm HTTP tới từng site (section 17, mặc định tắt)
 ```
 
 Đọc **section 2B** trước — nó cho biết web server nào đang thực sự phục vụ request, và điều đó
@@ -87,6 +88,21 @@ là dấu vết scanner đó để lại, và mốc thời gian của chúng d�
 plugin. Thư mục plugin không có plugin header. Thư mục chèn vào trong cây core. JavaScript tự
 giải mã bằng XOR key lặp rồi chèn thẻ script, ghép chuỗi từ thuộc tính `.name` của built-in để vô
 hiệu hoá tìm kiếm từ khoá, hoặc tải payload từ smart contract blockchain thay vì từ domain.
+
+**Phát hiện tổng quát — cho họ mã độc chưa ai biết**
+Mọi section dựa vào signature đều chung một điểm yếu: chỉ tìm được cái đã có người mô tả. Nhóm
+check này mô hình hoá **cái gì là bình thường** thay vì mô hình hoá mã độc. Chuỗi base64 liền
+rất dài và dòng đơn cực dài trong file PHP, ngưỡng đặt từ đo đạc chứ không từ cảm tính — payload
+độc thực tế có chuỗi base64 56.030 ký tự và dòng dài 56.101, so với 1.467 và 1.499 của một icon
+nhúng hợp lệ. Nội dung trái với phần mở rộng của chính nó. Và `wp core verify-checksums` cùng
+`wp plugin verify-checksums` — chỉ hỏi file có khớp với bản wordpress.org phát hành hay không,
+nên báo được mọi file core bị sửa và mọi file lạ trong thư mục plugin, bất kể nội dung hay mức độ
+obfuscate. Đây là check duy nhất ở đây tìm được họ mã độc mà chưa ai từng thấy.
+
+Với `--http`, script gọi mỗi site hai lần — bình thường, và giả khách mobile đến từ Google — rồi
+so sánh các thẻ script. Cách này bắt được inject nằm trong **database** hoặc trong **cấu hình web
+server** — những chỗ mà quét file không thấy — và lộ ra cơ chế cloaking dùng để ẩn payload khỏi
+chính chủ site.
 
 **Truy vết**
 Đối chiếu access log với mtime của shell, endpoint task của component CMS và status code chúng

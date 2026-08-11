@@ -35,7 +35,7 @@ web server that never reads `.htaccess`. See [MITIGATION.md](docs/en/MITIGATION.
 
 | Document | Purpose |
 |---|---|
-| [webshell-triage.sh](webshell-triage.sh) | Read-only scanner, 19 sections |
+| [webshell-triage.sh](webshell-triage.sh) | Read-only scanner, 20 sections |
 | [PLAYBOOK.md](docs/en/PLAYBOOK.md) | 8-phase response procedure, in order |
 | [MITIGATION.md](docs/en/MITIGATION.md) | Blocking PHP execution — the correct recipe per web server |
 | [HARDENING.md](docs/en/HARDENING.md) | Prevention, ranked by effect over effort |
@@ -57,6 +57,7 @@ Options:
 --days N        window for the "recently modified" checks (default 30)
 --root PATH     add a webroot the script did not auto-detect
 --out FILE      report destination (default /root/triage-<host>-<time>.txt)
+--http          also fetch each site over the network (section 17, off by default)
 ```
 
 Read section **2B** first — it tells you which web server is actually serving requests, which
@@ -90,6 +91,22 @@ appear in the admin plugin list. Plugin directories with no plugin header. Injec
 subdirectories inside core trees. JavaScript that decodes itself with a repeating-key XOR and
 injects a script element, assembles strings from built-in `.name` properties to defeat keyword
 search, or fetches its payload from a blockchain contract instead of a domain.
+
+**Generic detection — for families no signature knows about**
+Every signature section shares one weakness: it only finds what somebody already described.
+These checks model what normal looks like instead. Long unbroken base64 runs and extremely
+long single lines in PHP, with thresholds set from measurement rather than taste — a live
+malicious payload carried a 56,030-character base64 run and a 56,101-character line, against
+1,467 and 1,499 for a legitimately embedded icon. Content that contradicts its own extension.
+And `wp core verify-checksums` plus `wp plugin verify-checksums`, which ask only whether a file
+matches what wordpress.org shipped — reporting any modified core file and any extra file in a
+plugin directory regardless of content, obfuscation or novelty. That is the one check here that
+reliably finds a family nobody has seen yet.
+
+With `--http`, the scanner also fetches each site twice — plainly, and as a mobile visitor
+arriving from Google — and diffs the script tags. That catches injection stored in the database
+or in web server config, which no file scan can see, and exposes cloaking that hides the payload
+from the site owner.
 
 **Attribution**
 Access log correlation against shell mtimes, CMS component task endpoints and the status codes

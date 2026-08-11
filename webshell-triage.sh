@@ -11,6 +11,7 @@
 #     sudo bash webshell-triage.sh --days 14       # "recent changes" window
 #     sudo bash webshell-triage.sh --root /home/user1/domains/site.com
 #     sudo bash webshell-triage.sh --out /root/report.txt
+#     sudo bash webshell-triage.sh --http          # also fetch each site (section 17)
 #
 #  If you get "bad interpreter: ^M":  sed -i 's/\r$//' webshell-triage.sh
 # =============================================================================
@@ -20,6 +21,7 @@ set -u
 DAYS=30
 EXTRA_ROOTS=()
 OUT=""
+DO_HTTP=0            # --http: fetch each site over the network (off by default)
 MAXHITS=400          # cap lines per section so the report stays readable
 
 while [ $# -gt 0 ]; do
@@ -27,6 +29,7 @@ while [ $# -gt 0 ]; do
     --days)  DAYS="$2"; shift 2 ;;
     --root)  EXTRA_ROOTS+=("$2"); shift 2 ;;
     --out)   OUT="$2"; shift 2 ;;
+    --http)  DO_HTTP=1; shift ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1"; exit 1 ;;
   esac
@@ -731,7 +734,115 @@ if [ "${#ROOTS[@]}" -gt 0 ]; then
 fi
 
 # -----------------------------------------------------------------------------
-sec "17. SUMMARY"
+sec "17. GENERIC DETECTION -- for families no signature knows about"
+# Every signature-based section above shares one weakness: it only finds what
+# somebody already described. Sections 6 and 16 were both written against real
+# samples and both still started out missing the sample that prompted them.
+#
+# The checks here do not model malware. They model what NORMAL looks like, and
+# report the outliers -- which is what catches a family nobody has seen yet.
+if [ "${#ROOTS[@]}" -gt 0 ]; then
+
+  sub "PHP files containing a long unbroken base64 run"
+  # Measured on a live sample: the malicious payload carried a 56,030-character
+  # run. A legitimately embedded PNG icon measured 1,467. The 4000 threshold sits
+  # between them. Base64-embedded fonts can legitimately exceed it, so treat a
+  # hit as "read this file", not as a verdict.
+  for r in "${ROOTS[@]}"; do
+    find "$r" -type f -name '*.php' -size +4k 2>/dev/null | while IFS= read -r f; do
+      L=$(grep -oE '[A-Za-z0-9+/]{4000,}' "$f" 2>/dev/null | awk '{print length($0)}' | sort -rn | head -1)
+      [ -n "$L" ] && log "  base64 run ${L}c  $(stat -c '%TY-%Tm-%Td %8s' "$f" 2>/dev/null)  $f"
+    done
+  done | cap
+
+  sub "PHP files with an extremely long single line"
+  # Same sample: longest line 56,101 characters against 71 for ordinary PHP.
+  # Obfuscators emit one enormous line because newlines cost them nothing and
+  # cost a reader everything.
+  for r in "${ROOTS[@]}"; do
+    find "$r" -type f -name '*.php' -size +4k 2>/dev/null | while IFS= read -r f; do
+      M=$(awk 'BEGIN{m=0}{if(length($0)>m)m=length($0)}END{print m}' "$f" 2>/dev/null)
+      [ "${M:-0}" -gt 5000 ] && log "  maxline ${M}c  $(stat -c '%TY-%Tm-%Td %8s' "$f" 2>/dev/null)  $f"
+    done
+  done | cap
+
+  sub "WordPress package integrity -- the strongest check available"
+  # This is the one check that finds an UNKNOWN family. It does not ask what the
+  # code does; it asks whether the file matches what wordpress.org shipped.
+  # Any modified core file, and any file present in a plugin directory that is
+  # not part of that plugin's official package, is reported regardless of
+  # content, obfuscation or novelty.
+  if have wp; then
+    for r in "${ROOTS[@]}"; do
+      [ -f "$r/wp-includes/version.php" ] || continue
+      log "  --- $r"
+      wp --path="$r" --allow-root --skip-plugins --skip-themes core verify-checksums 2>&1 \
+        | head -25 | sed 's/^/    /'
+      wp --path="$r" --allow-root --skip-plugins --skip-themes plugin verify-checksums --all 2>&1 \
+        | head -40 | sed 's/^/    /'
+    done | cap
+  else
+    log "  !! wp-cli is NOT installed, and for WordPress hosts this is the single"
+    log "  !! most valuable check you are missing. It finds families no pattern knows."
+    log "  !!   curl -sO https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar"
+    log "  !!   install -m0755 wp-cli.phar /usr/local/bin/wp"
+    log "  !! Then: wp --path=<webroot> --allow-root core verify-checksums"
+    log "  !!       wp --path=<webroot> --allow-root plugin verify-checksums --all"
+  fi
+  log ""
+  log "  Joomla has no equivalent bundled command. Compare against a clean archive"
+  log "  of the same version instead:"
+  log "    diff -rq --exclude=images --exclude=cache <clean-unpack>/ <webroot>/"
+
+  sub "files whose extension does not match their content"
+  # An extension is a claim, not a fact. Reading the first bytes is the check.
+  for r in "${ROOTS[@]}"; do
+    find "$r" -type f \( -iname '*.txt' -o -iname '*.log' -o -iname '*.css' -o -iname '*.json' \) \
+      -size +0 2>/dev/null | head -3000 | while IFS= read -r f; do
+      head -c 256 "$f" 2>/dev/null | grep -qaE '<\?php|<\?=' && log "  PHP inside $f"
+    done
+  done | cap
+
+  if [ "$DO_HTTP" = "1" ]; then
+    sub "black-box fetch: injection served to visitors but absent from files"
+    # File scanning cannot see an injection stored in the database or in web
+    # server config. Fetching the site as a visitor can. Cloaked injections
+    # commonly appear only for a search-engine referrer or a mobile agent, and
+    # never for a logged-in administrator -- so two requests are compared.
+    UA_M='Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15'
+    for r in "${ROOTS[@]}"; do
+      dom=$(printf '%s\n' "$r" | sed -n 's|^/home/[^/]*/domains/\([^/]*\)/.*|\1|p')
+      [ -z "$dom" ] && continue
+      A=$(mktemp) ; B=$(mktemp)
+      curl -sL --max-time 20 "https://$dom/" -o "$A" 2>/dev/null
+      curl -sL --max-time 20 -A "$UA_M" -e 'https://www.google.com/' "https://$dom/" -o "$B" 2>/dev/null
+      if [ -s "$A" ] || [ -s "$B" ]; then
+        d=$(diff <(grep -oE '<script[^>]*>' "$A" 2>/dev/null | sort -u) \
+                 <(grep -oE '<script[^>]*>' "$B" 2>/dev/null | sort -u) 2>/dev/null)
+        [ -n "$d" ] && { log "  CLOAKING DIFFERENCE  $dom"; printf '%s\n' "$d" | sed 's/^/    /' | cap; }
+        for pat in 'atob(' 'fromCharCode' 'documentElement.appendChild' 'navigator.clipboard'; do
+          grep -qF "$pat" "$A" 2>/dev/null && log "  $dom  serves: $pat"
+          grep -qF "$pat" "$B" 2>/dev/null && log "  $dom  serves (mobile/referrer): $pat"
+        done
+      fi
+      rm -f "$A" "$B"
+    done | cap
+  else
+    sub "black-box fetch  [SKIPPED -- pass --http to enable]"
+    log "  Off by default: it makes outbound requests, which during an incident may"
+    log "  be blocked by your own containment or may signal that you are looking."
+    log "  Enable when you need to catch injection stored outside the filesystem --"
+    log "  in the database, or in web server config -- which no file scan can see."
+  fi
+
+  log ""
+  log "  The only detection that does not depend on recognising the malware is a"
+  log "  baseline taken while clean, compared daily. See PLAYBOOK Phase 8. It will"
+  log "  not find what is already present, so take it AFTER remediation, not before."
+fi
+
+# -----------------------------------------------------------------------------
+sec "18. SUMMARY"
 log "panel:                      $PANEL"
 log "webroots scanned:           ${#ROOTS[@]}"
 log "signature-matched files:    $NC"
