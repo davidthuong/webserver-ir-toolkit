@@ -30,7 +30,10 @@ SCANNER="$HERE/webshell-triage.sh"
 [ -f "$SCANNER" ] || { echo "cannot find $SCANNER"; exit 1; }
 
 LAB=$(mktemp -d) || exit 1
-trap 'rm -rf "$LAB"' EXIT
+# Signals included deliberately: EXIT alone does not fire on an untrapped
+# SIGTERM or SIGINT, and this script creates a lab full of malware-shaped files
+# that must not be left behind if someone interrupts it.
+trap 'rm -rf "$LAB"' EXIT INT TERM HUP
 
 # The tree under test and this script's own bookkeeping must not share a
 # directory. Snapshot files living inside the scanned tree would show up in the

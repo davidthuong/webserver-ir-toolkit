@@ -77,7 +77,20 @@ fi
 # Artifacts worth aggregating are collected as the sections run, so the summary
 # can answer the two questions every administrator asks first -- how many sites,
 # and since when -- without a second pass over the disk.
-ARTIFACTS=$(mktemp) || exit 1
+# Everything the script writes lives under one directory, so it can be excluded
+# from its own scans by a single path. Previously each temp file was a separate
+# mktemp directly in /tmp, and since /tmp is itself scanned, the run reported its
+# own working files as findings -- $SIG worst of all, because it holds the
+# signature patterns and therefore matches the signature scan every single time.
+WORK=$(mktemp -d) || exit 1
+# EXIT alone is not enough: a shell killed by an untrapped SIGTERM or SIGINT
+# exits without running its EXIT trap, verified by measurement rather than
+# assumed. Since the documented advice for a heavy run is to interrupt it with
+# Ctrl+C, the common case would have been the leaky one -- leaving a temp
+# directory behind on each abort, on hosts that are often short of disk.
+trap 'rm -rf "$WORK"' EXIT INT TERM HUP
+ARTIFACTS="$WORK/artifacts"
+: > "$ARTIFACTS"
 
 # Pass-through filter: prints its input unchanged, and records any absolute path
 # it sees. Handles bare paths and "some prefix /abs/path" lines alike.
@@ -453,7 +466,8 @@ fi
 
 # -----------------------------------------------------------------------------
 sec "6. WEBSHELL SIGNATURE SCAN"
-SIG=$(mktemp) || exit 1
+SIG="$WORK/sig"
+: > "$SIG" || exit 1
 cat > "$SIG" <<'PATTERNS'
 eval[[:space:]]*\([[:space:]]*(base64_decode|gzinflate|gzuncompress|gzdecode|str_rot13|strrev|pack|hex2bin|convert_uudecode|urldecode)
 (eval|assert|create_function)[[:space:]]*\([^)]{0,120}\$_(GET|POST|REQUEST|COOKIE|SERVER|FILES)
@@ -481,11 +495,14 @@ SCAN_INC=(--include='*.php' --include='*.php[0-9]' --include='*.phtml' --include
           --include='*.suspected' --include='*.cgi' --include='*.pl' --include='*.py'
           --include='*.htaccess' --include='*.txt')
 
-CAND=$(mktemp)
+CAND="$WORK/cand"
+: > "$CAND"
 if [ "${#ROOTS[@]}" -gt 0 ]; then
   grep -rlEf "$SIG" "${SCAN_INC[@]}" "${ROOTS[@]}" 2>/dev/null | sort -u > "$CAND"
 fi
-[ "${#TMPDIRS[@]}" -gt 0 ] && grep -rlEf "$SIG" "${TMPDIRS[@]}" 2>/dev/null | sort -u >> "$CAND"
+# --exclude-dir on the basename of $WORK keeps the run from matching its own
+# pattern file; $OUT is filtered too in case the report was written under /tmp.
+[ "${#TMPDIRS[@]}" -gt 0 ] && grep -rlEf "$SIG" "${TMPDIRS[@]}"   --exclude-dir="$(basename "$WORK")" 2>/dev/null   | grep -vF -e "$WORK" -e "$OUT" | sort -u >> "$CAND"
 sort -u -o "$CAND" "$CAND"
 
 NC=$(wc -l < "$CAND" | tr -d ' ')
@@ -981,7 +998,7 @@ if [ "${#ROOTS[@]}" -gt 0 ]; then
     for r in "${ROOTS[@]}"; do
       dom=$(printf '%s\n' "$r" | sed -n 's|^/home/[^/]*/domains/\([^/]*\)/.*|\1|p')
       [ -z "$dom" ] && continue
-      A=$(mktemp) ; B=$(mktemp)
+      A="$WORK/fetch_a" ; B="$WORK/fetch_b"
       curl -sL --max-time 20 "https://$dom/" -o "$A" 2>/dev/null
       curl -sL --max-time 20 -A "$UA_M" -e 'https://www.google.com/' "https://$dom/" -o "$B" 2>/dev/null
       if [ -s "$A" ] || [ -s "$B" ]; then
@@ -993,7 +1010,6 @@ if [ "${#ROOTS[@]}" -gt 0 ]; then
           grep -qF "$pat" "$B" 2>/dev/null && log "  $dom  serves (mobile/referrer): $pat"
         done
       fi
-      rm -f "$A" "$B"
     done | cap
   else
     sub "black-box fetch  [SKIPPED -- pass --http to enable]"
@@ -1022,8 +1038,9 @@ log "full report:                $OUT"
 # Two questions get asked before any others: how many sites, and since when.
 # Both were previously left for the reader to derive by scrolling a few thousand
 # lines and correlating timestamps by eye, which is slow and easy to get wrong.
-ALL=$(mktemp)
-sort -u "$ARTIFACTS" 2>/dev/null | grep -E '^/' > "$ALL"
+ALL="$WORK/all"
+: > "$ALL"
+sort -u "$ARTIFACTS" 2>/dev/null | grep -E '^/'   | grep -vF -e "$WORK" -e "$OUT" > "$ALL"
 # Signature hits belong in the same picture.
 [ -s "$CAND" ] && cat "$CAND" >> "$ALL"
 sort -u "$ALL" -o "$ALL" 2>/dev/null
@@ -1057,7 +1074,8 @@ fi
 log ""
 log "== INTRUSION TIMELINE ========================================="
 if [ "${NART:-0}" -gt 0 ]; then
-  TL=$(mktemp)
+  TL="$WORK/timeline"
+  : > "$TL"
   # One stat invocation per batch rather than per file.
   xargs -a "$ALL" -d '\n' -r stat -c '%Y|%y|%n' 2>/dev/null | sort -n > "$TL"
   if [ -s "$TL" ]; then
@@ -1092,11 +1110,9 @@ if [ "${NART:-0}" -gt 0 ]; then
     log "  session. Clusters spread over months mean repeated re-entry, which means"
     log "  the way in is still open -- cleaning without closing it repeats the cycle."
   fi
-  rm -f "$TL"
 else
   log "  no artifacts to date"
 fi
-rm -f "$ALL"
 
 log ""
 log "== WHAT A QUIET REPORT DOES AND DOES NOT MEAN ================="
@@ -1118,6 +1134,6 @@ log "  3. Find the entry point in section 14 before cleaning, or it comes back."
 log "  4. Rotate ALL credentials: panel, FTP, MySQL, SSH keys, CMS admins, API keys."
 log "  5. If section 5 shows ld.so.preload, a UID-0 account, or modified system binaries,"
 log "     assume root compromise -> rebuild the server, migrate only data."
-rm -f "$SIG" "$ARTIFACTS"
+rm -rf "$WORK"
 echo ""
 echo "Done. Report: $OUT"
