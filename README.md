@@ -55,7 +55,7 @@ Options:
 
 ```
 --days N        window for the "recently modified" checks (default 30)
---root PATH     add a webroot the script did not auto-detect
+--root PATH     RESTRICT the scan to this path; skips auto-detection (repeatable)
 --out FILE      report destination (default /root/triage-<host>-<time>.txt)
 --checksums     verify WordPress packages against wordpress.org (slow, best check)
 --http          also fetch each site over the network (section 17, off by default)

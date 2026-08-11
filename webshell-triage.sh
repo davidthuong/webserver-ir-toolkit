@@ -21,7 +21,8 @@
 #  Usage:
 #     sudo bash webshell-triage.sh                 # scan auto-detected webroots
 #     sudo bash webshell-triage.sh --days 14       # "recent changes" window
-#     sudo bash webshell-triage.sh --root /home/user1/domains/site.com
+#     sudo bash webshell-triage.sh --root /home/user1/domains/site.com/public_html
+#                                                  # --root RESTRICTS to that path only
 #     sudo bash webshell-triage.sh --out /root/report.txt
 #     sudo bash webshell-triage.sh --checksums     # verify WP packages (slow, best check)
 #     sudo bash webshell-triage.sh --http          # also fetch each site (section 17)
@@ -108,19 +109,28 @@ fi
 
 ROOTS=()
 add_root() { [ -d "$1" ] && ROOTS+=("$1"); }
-# DirectAdmin / cPanel style
-for d in /home/*/domains/*/public_html /home/*/domains/*/private_html /home/*/public_html; do
-  add_root "$d"
-done
-# Plesk style (httpdocs + subdomain dirs)
-for d in /var/www/vhosts/*/httpdocs /var/www/vhosts/*/*/httpdocs /var/www/vhosts/*/subdomains/*; do
-  add_root "$d"
-done
-# generic
-for d in /var/www/html /var/www /usr/share/nginx/html /srv/www /opt/lampp/htdocs; do
-  add_root "$d"
-done
-for d in "${EXTRA_ROOTS[@]:-}"; do add_root "$d"; done
+
+# --root RESTRICTS the scan to what you name; it does not add to auto-detection.
+# Scoping a first run to one site is the main reason to pass it, and a --root that
+# still walked every other webroot on the host would defeat that -- so when any
+# --root is given, auto-detection is skipped entirely.
+if [ "${#EXTRA_ROOTS[@]}" -gt 0 ]; then
+  for d in "${EXTRA_ROOTS[@]}"; do add_root "$d"; done
+  log "scope: --root given, auto-detection SKIPPED (${#ROOTS[@]} root(s) only)"
+else
+  # DirectAdmin / cPanel style
+  for d in /home/*/domains/*/public_html /home/*/domains/*/private_html /home/*/public_html; do
+    add_root "$d"
+  done
+  # Plesk style (httpdocs + subdomain dirs)
+  for d in /var/www/vhosts/*/httpdocs /var/www/vhosts/*/*/httpdocs /var/www/vhosts/*/subdomains/*; do
+    add_root "$d"
+  done
+  # generic
+  for d in /var/www/html /var/www /usr/share/nginx/html /srv/www /opt/lampp/htdocs; do
+    add_root "$d"
+  done
+fi
 
 # de-duplicate, drop nested duplicates of /var/www when vhosts exist
 mapfile -t ROOTS < <(printf '%s\n' "${ROOTS[@]:-}" | awk 'NF' | sort -u)

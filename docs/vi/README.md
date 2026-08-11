@@ -53,7 +53,7 @@ Tuỳ chọn:
 
 ```
 --days N        cửa sổ thời gian cho phần "file mới sửa" (mặc định 30)
---root PATH     thêm webroot nếu script không tự tìm ra
+--root PATH     GIỚI HẠN scan vào đúng đường dẫn này; bỏ auto-detect (dùng nhiều lần được)
 --out FILE      chỗ ghi báo cáo (mặc định /root/triage-<host>-<time>.txt)
 --checksums     đối chiếu package WordPress với wordpress.org (chậm, check mạnh nhất)
 --http          gọi thêm HTTP tới từng site (section 17, mặc định tắt)
