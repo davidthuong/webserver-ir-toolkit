@@ -174,8 +174,17 @@ Shell chia 2 bước, tách variable function ra nhiều câu lệnh
 (`$f = $_POST['a']; $f($_POST['b']);`) được bắt bằng cách yêu cầu **cả hai** nửa cùng nằm trong
 một file, thay vì bằng pattern một dòng — chính điều đó giữ số false positive ở mức 0.
 
-**Sửa `$SIG` thì phải test lại cả hai chiều.** Bộ pattern báo nhầm code hợp lệ sẽ bị bỏ qua, và
-một scanner bị bỏ qua thì tệ hơn là không có.
+**Sửa `$SIG` thì phải test lại cả hai chiều** — chỉ một lệnh, và đã có sẵn trong repo:
+
+```bash
+bash tools/test-signatures.sh            # pattern, cộng scanner chạy đầu-cuối
+bash tools/test-signatures.sh --patterns-only   # khi không ở trên host Linux
+```
+
+Nó đọc pattern trực tiếp từ `webshell-triage.sh` nên không thể lệch khỏi code nó đang kiểm, và
+nó test cả hai chiều cộng thêm một thứ mà không chiều nào phủ: phát hiện có **thật sự vào tới
+file report** hay không. Bộ pattern báo nhầm code hợp lệ sẽ bị bỏ qua, và một scanner bị bỏ qua
+thì tệ hơn là không có.
 
 ---
 

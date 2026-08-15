@@ -14,16 +14,28 @@ viết theo tài liệu nhà cung cấp**. Cả hai đều được phát hành;
 
 Scanner có 20 section và **chỉ đọc** theo thiết kế —
 [tools/verify-readonly.sh](../../tools/verify-readonly.sh) chứng minh điều đó bằng thực nghiệm
-thay vì khẳng định suông. Tài liệu duy trì song song tiếng Anh và tiếng Việt.
+thay vì khẳng định suông. [tools/test-signatures.sh](../../tools/test-signatures.sh) làm điều
+tương tự cho bộ pattern. Tài liệu duy trì song song tiếng Anh và tiếng Việt.
 
 ### Khả năng phát hiện, và cách đo
 
 | Lớp | Kết quả | Cách đo |
 |---|---|---|
-| Signature webshell | 16/16 phát hiện, 0/12 báo nhầm | 16 dạng shell thật, đối chứng bằng 12 mẫu code sạch chọn đúng những cấu trúc mà pattern viết vội hay báo nhầm |
+| Signature webshell | 16/16 phát hiện, 0/12 báo nhầm | 16 dạng shell thật, đối chứng bằng 12 mẫu code sạch chọn đúng những cấu trúc mà pattern viết vội hay báo nhầm. Là phép đo một lần trên mẫu sống, **không** chạy lại được từ repo này |
+| Bộ mẫu hồi quy cho signature | 19/19 phát hiện, 0/16 báo nhầm, 19/19 pattern có mẫu | `tools/test-signatures.sh`, commit kèm và chạy lại được: mỗi pattern một fixture tổng hợp, cộng các mẫu code sạch đối chứng. Đã kiểm là nó **thất bại đúng lúc cần** — pattern hỏng cú pháp, pattern bị xoá, pattern quá tham, và report rỗng |
 | Chống dọn + inject client-side | 5/5 phát hiện, 0/7 báo nhầm | Mẫu lấy từ một vụ xâm nhập thật, gồm loader dùng XOR key lặp |
 | Ngưỡng phát hiện tổng quát | Phân biệt rõ | Đo thật: payload độc có chuỗi base64 **56.030** ký tự, icon nhúng hợp lệ **1.467** |
 | Đảm bảo chỉ đọc | PASS | Chạy trọn 20 section trên cây thử; sha256, quyền và danh sách file giống hệt trước/sau |
+
+Hai dòng về signature **không** nói cùng một điều. Dòng đầu là kết quả mã độc thật đối đầu với
+bộ pattern, một lần; dòng sau là thứ bất kỳ ai cũng chạy lại được sau khi sửa pattern. Không
+cái nào thay được cái nào, và lý do bộ mẫu là tổng hợp: repo này không chứa mã độc thật.
+
+Một điểm cần nói rõ về dòng thứ hai, đúng tinh thần của tài liệu này: lớp kiểm pattern đã chạy
+trên code thật, nhưng lớp đầu-cuối — lớp chạy scanner rồi đọc ngược report — mới chỉ được kiểm
+bằng một scanner giả sinh ra report, **chưa** chạy với `webshell-triage.sh` thật trên Linux. Nó
+từ chối chạy trên nền tảng không phải Linux thay vì báo khác biệt nền tảng thành lỗi, nên trên
+máy trạm sẽ trả về exit 2. Chạy một lần trên host thật là đủ để khoá lại khoảng trống này.
 
 ### Phạm vi nền tảng
 
@@ -52,13 +64,6 @@ không hỏi nó có giống thứ ai đó từng mô tả hay không.
 ## Sắp làm
 
 Xếp theo mức giảm rủi ro report bị sai trong im lặng.
-
-**Bộ chạy test cho signature.** `CONTRIBUTING.md` yêu cầu người đóng góp test lại bộ pattern
-theo cả hai chiều, rồi không cung cấp cách nào để làm. Bộ mẫu tạo ra con số 16/16 và 0/12 hiện
-chỉ tồn tại dưới dạng lệnh chạy tay. Một `tools/test-signatures.sh` với fixture tổng hợp được
-commit kèm sẽ biến yêu cầu đó thành thứ chạy được, và làm việc nhận PR về pattern trở nên an
-toàn. Xếp đầu vì **mọi defect tìm ra trong toolkit này đều do test mà ra**, và hai trong số đó
-là lỗi pattern thất bại trong im lặng.
 
 **Kiểm toàn vẹn cho Joomla.** WordPress có `wp core verify-checksums` và
 `wp plugin verify-checksums` — đó là check duy nhất tìm được họ mã độc chưa ai mô tả. Joomla

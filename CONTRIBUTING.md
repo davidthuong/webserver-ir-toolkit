@@ -51,16 +51,37 @@ malware-shaped files the test creates, and a file your AV removed looks exactly 
 scanner removed — which is why the script tracks paths that were already unreadable before the
 scan started and excludes them from the verdict instead of reporting a false failure.
 
-**Signature changes must be tested both ways.** If you touch the `$SIG` heredoc, verify
-against real shell forms *and* against clean code:
+**Signature changes must be tested both ways.** If you touch the `$SIG` heredoc, run:
 
 ```bash
-# extract the pattern set
-sed -n '/^cat > "\$SIG" <<.PATTERNS.$/,/^PATTERNS$/p' webshell-triage.sh | sed '1d;$d' > /tmp/sig.txt
-
-# then check both directions
-printf '%s\n' '<?php eval($compiled_template); ?>' | grep -qEf /tmp/sig.txt && echo "FALSE POSITIVE"
+bash tools/test-signatures.sh            # on a Linux host: both layers
+bash tools/test-signatures.sh --patterns-only   # anywhere else: patterns only
 ```
+
+It extracts the patterns from `webshell-triage.sh` itself rather than keeping a copy, so it
+cannot drift away from the code it tests. It checks three things a pattern set gets wrong:
+
+| Check | Why it is there |
+|---|---|
+| every pattern compiles | a malformed bracket expression makes `grep` exit 2, and the scanner suppresses stderr — a broken pattern reads as a clean result |
+| shell forms are detected | the direction everyone tests |
+| clean code is not flagged | the direction that decides whether the section gets read at all |
+
+It then plants the same fixtures in a throwaway webroot, runs the real scanner over it, and
+checks that the **report file** names them — because the patterns matching and the report
+saying so are two different claims, and the second one was false for weeks without anyone
+noticing.
+
+| Exit | Meaning |
+|---|---|
+| 0 | pass |
+| 1 | fail — a miss, a false positive, or a pattern that does not compile |
+| 2 | inconclusive — patterns could not be extracted, or the scanner could not be run here |
+
+**A new pattern needs a new fixture.** The script warns about any pattern no fixture
+exercises; an untested pattern is a claim, not a check. Add a minimal synthetic reproduction
+next to the others — something with the property the pattern looks for, that is not itself a
+working shell. Never commit real malware.
 
 State the results in the PR: how many shell forms detected, how many clean samples flagged.
 A pattern that adds one detection and two false positives is a regression.

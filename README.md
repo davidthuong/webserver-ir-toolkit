@@ -179,8 +179,17 @@ Two-step shells that split a variable function across statements
 (`$f = $_POST['a']; $f($_POST['b']);`) are caught by requiring both halves in the same file
 rather than by a single-line pattern — which is what keeps the false positive count at zero.
 
-**If you change `$SIG`, re-run that check.** A pattern set that flags legitimate code gets
-ignored, and an ignored scanner is worse than none.
+**If you change `$SIG`, re-run that check** — it is one command, and it is checked in:
+
+```bash
+bash tools/test-signatures.sh            # patterns, plus the scanner end to end
+bash tools/test-signatures.sh --patterns-only   # off a Linux host
+```
+
+It reads the patterns out of `webshell-triage.sh` itself, so it cannot fall out of step with
+the code, and it tests both directions plus one thing neither direction covers: that the
+findings reach the **report file**. A pattern set that flags legitimate code gets ignored, and
+an ignored scanner is worse than none.
 
 ---
 

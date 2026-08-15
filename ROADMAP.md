@@ -15,16 +15,29 @@ ship; only one has been proven.
 
 The scanner runs 20 sections and is read-only by construction, which
 [tools/verify-readonly.sh](tools/verify-readonly.sh) demonstrates rather than asserts.
+[tools/test-signatures.sh](tools/test-signatures.sh) does the same for the pattern set.
 Documentation is maintained in English and Vietnamese with parity.
 
 ### Detection, and how it was measured
 
 | Layer | Result | Method |
 |---|---|---|
-| Webshell signatures | 16/16 detected, 0/12 false positives | 16 real shell forms against 12 clean-code controls chosen to be the constructs naive patterns trip on |
+| Webshell signatures | 16/16 detected, 0/12 false positives | 16 real shell forms against 12 clean-code controls chosen to be the constructs naive patterns trip on. A one-off measurement against live samples, not reproducible from this repository |
+| Signature regression corpus | 19/19 detected, 0/16 false positives, 19/19 patterns exercised | `tools/test-signatures.sh`, checked in and repeatable: one synthetic fixture per pattern, plus clean controls. Verified to fail on a broken pattern, a deleted pattern, a greedy pattern and an empty report |
 | Anti-cleanup + client-side injection | 5/5 detected, 0/7 false positives | Samples recovered from a live compromise, including a repeating-key XOR loader |
 | Generic detection thresholds | separates cleanly | Measured: a malicious payload carried a 56,030-char base64 run against 1,467 for a legitimately embedded icon |
 | Read-only guarantee | PASS | Full 20-section run over a fixture tree; sha256, permissions and directory listing identical before and after |
+
+The two signature rows are not the same claim. The first is what real malware did against the
+patterns once; the second is what anyone can re-run after changing them. Neither replaces the
+other, and the reason the corpus is synthetic is that this repository does not carry malware.
+
+One caveat on that second row, stated in the spirit of the rest of this document: the test
+runner's pattern layer has been exercised on real code, but its end-to-end layer — the one that
+runs the scanner and reads the report back — has so far been driven against a stub that
+fabricates a report, not against `webshell-triage.sh` on Linux. It refuses to run on anything
+that is not Linux rather than reporting a platform difference as a defect, so on a workstation
+it returns exit 2. Running it once on a real host would close that gap.
 
 ### Platform coverage
 
@@ -53,13 +66,6 @@ upstream shipped rather than whether they resemble something previously describe
 ## Next
 
 Ordered by how much each reduces the chance of a report being quietly wrong.
-
-**A signature test runner.** `CONTRIBUTING.md` asks contributors to re-test the pattern set in
-both directions, and then offers no way to do it. The corpus that produced the 16/16 and 0/12
-figures exists only as ad-hoc commands. A `tools/test-signatures.sh` with checked-in synthetic
-fixtures would make that instruction executable and make pattern contributions safe to accept.
-This ranks first because every defect found in this toolkit so far was found by testing, and
-two of them were pattern bugs that failed silently.
 
 **Joomla integrity verification.** WordPress has `wp core verify-checksums` and
 `wp plugin verify-checksums`, and they are the only checks that reliably find a family nobody
