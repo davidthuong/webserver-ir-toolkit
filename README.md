@@ -43,6 +43,7 @@ web server that never reads `.htaccess`. See [MITIGATION.md](docs/en/MITIGATION.
 | [HARDENING.md](docs/en/HARDENING.md) | Prevention, ranked by effect over effort |
 | [IMUNIFY360.md](docs/en/IMUNIFY360.md) | Why a server with Imunify360 still got shelled |
 | [INTAKE.md](docs/en/INTAKE.md) | Collecting samples for analysis without your AV eating them |
+| [ROADMAP.md](ROADMAP.md) | What is verified in the field, what came from documentation, what is planned |
 
 ---
 

@@ -41,6 +41,7 @@ bao giờ đọc `.htaccess`. Xem [MITIGATION.md](MITIGATION.md).
 | [HARDENING.md](HARDENING.md) | Phòng ngừa, xếp theo hiệu quả trên công sức |
 | [IMUNIFY360.md](IMUNIFY360.md) | Vì sao server có Imunify360 mà vẫn bị shell |
 | [INTAKE.md](INTAKE.md) | Lấy mẫu về phân tích mà không bị AV xoá |
+| [ROADMAP.md](ROADMAP.md) | Cái gì đã kiểm chứng thực tế, cái gì theo tài liệu, sắp làm gì |
 
 ---
 
