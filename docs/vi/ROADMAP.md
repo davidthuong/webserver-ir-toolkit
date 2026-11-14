@@ -59,7 +59,8 @@ kiểm lại sau mỗi thay đổi.
 | cPanel | Đã kiểm trong lab trên cPanel & WHM 138 (Ubuntu 24.04, cài thật, license trial, một account có subdomain và addon domain): nhận diện panel, document root đọc từ `/var/cpanel/userdata` kể cả addon domain nằm ngoài `public_html`, crontab theo user, đường dẫn EasyApache và `AllowOverride`, PHP binary, log đăng nhập, và các file `.gz` theo tháng mà cPanel dồn access log vào. Mẫu thử là tổng hợp; chưa chạy trên host cPanel bị chiếm |
 | nginx | Theo tài liệu |
 | LiteSpeed Enterprise | Theo tài liệu — phân biệt edition rất quan trọng, và script **từ chối đoán** |
-| CyberPanel, Virtualmin | Chỉ mới có đường dẫn log |
+| CyberPanel | Đã kiểm trong lab trên CyberPanel 3.0 với OpenLiteSpeed 2.5.7 (Ubuntu 24.04, cài thật, một site có child domain): nhận diện panel, document root, crontab theo user, access log theo site, đăng nhập Pure-FTPd đọc từ `/var/log/syslog`, và tên miền cho `--http` đọc từ cấu hình vhost của OpenLiteSpeed. Lần chạy đó tìm ra ba lỗi: không nhận ra panel, báo không có FTP trong khi FTP đang chạy, và `--http` không tải site nào. Mẫu thử là tổng hợp; chưa chạy trên host CyberPanel bị chiếm |
+| Virtualmin | Chỉ mới có đường dẫn log |
 | Debian / Ubuntu | Scanner và cả hai bài tự kiểm chạy trong CI và trên một host Ubuntu 24.04 thật không có panel; đường dẫn package và log viết theo tài liệu, chưa chạy trên host bị chiếm |
 
 Hai tính năng **chưa từng dùng** trên sự cố thật: `--http` (fetch black-box và so sánh

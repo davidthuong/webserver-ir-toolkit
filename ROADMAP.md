@@ -61,7 +61,8 @@ re-checked on each change.
 | cPanel | Lab-checked on cPanel & WHM 138 (Ubuntu 24.04, real install, trial licence, one account with a subdomain and addon domains): panel detection, document roots read from `/var/cpanel/userdata` including an addon domain outside `public_html`, user crontabs, EasyApache paths and `AllowOverride`, PHP binaries, login logs, and the monthly `.gz` archives cPanel moves access logs into. Fixtures were synthetic; not run on a compromised cPanel host |
 | nginx | From documentation |
 | LiteSpeed Enterprise | From documentation — the edition split matters and the script refuses to guess it |
-| CyberPanel, Virtualmin | Log paths only |
+| CyberPanel | Lab-checked on CyberPanel 3.0 with OpenLiteSpeed 2.5.7 (Ubuntu 24.04, real install, one site with a child domain): panel detection, document roots, user crontabs, per-site access logs, Pure-FTPd logins read from `/var/log/syslog`, and `--http` domains read from the OpenLiteSpeed vhost configs. That run found three defects: no panel label, an FTP daemon reported as absent while running, and `--http` fetching nothing. Fixtures were synthetic; not run on a compromised CyberPanel host |
+| Virtualmin | Log paths only |
 | Debian / Ubuntu | Scanner and both self-checks run in CI and on one real Ubuntu 24.04 host with no panel; package and log paths from documentation, not run on a compromised host |
 
 Two features have never been exercised against a real compromise: `--http` (black-box fetch

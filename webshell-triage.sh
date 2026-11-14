@@ -144,6 +144,9 @@ if [ -x /usr/sbin/plesk ] || [ -x /usr/local/psa/bin/init_conf ] || [ -f /usr/lo
   PANELS+=("Plesk")
 fi
 [ -x /usr/local/cpanel/cpanel ] && PANELS+=("cPanel")
+# CyberPanel: the Django app plus its own web daemon, lscpd. Both are required,
+# so a CyberCP directory left behind by an uninstall does not count.
+[ -d /usr/local/CyberCP ] && [ -x /usr/local/lscp/bin/lscpd ] && PANELS+=("CyberPanel")
 
 case "${#PANELS[@]}" in
   0) log "panel detected: unknown -- no panel binary found" ;;
@@ -158,7 +161,8 @@ esac
 
 sub "panel evidence on disk (so a wrong label above is debuggable)"
 for p in /usr/local/directadmin/directadmin /usr/sbin/plesk /usr/local/psa/version \
-         /usr/local/psa /opt/psa /usr/local/cpanel/cpanel /usr/local/cpanel; do
+         /usr/local/psa /opt/psa /usr/local/cpanel/cpanel /usr/local/cpanel \
+         /usr/local/CyberCP /usr/local/lscp/bin/lscpd; do
   [ -e "$p" ] && log "  present: $p"
 done
 
@@ -167,6 +171,8 @@ done
 have plesk && log "Plesk version: $(plesk version 2>/dev/null | head -3)"
 [ -x /usr/local/cpanel/cpanel ] && \
   log "cPanel version: $(/usr/local/cpanel/cpanel -V 2>/dev/null | head -1)"
+[ -f /usr/local/CyberCP/version.txt ] && \
+  log "CyberPanel version: $(head -c 200 /usr/local/CyberCP/version.txt 2>/dev/null)"
 
 ROOTS=()
 add_root() { [ -d "$1" ] && ROOTS+=("$1"); }
@@ -858,20 +864,40 @@ grep -hE 'Accepted (password|publickey)' /var/log/secure /var/log/auth.log 2>/de
 # one of them reports nothing on a host running the other, which reads exactly
 # like a host with no FTP activity. Report which daemon is actually running so
 # an empty result can be told apart from an unsupported log format.
+#
+# Detected by running process, not by unit name. Debian and Ubuntu ship Pure-FTPd
+# as pure-ftpd-mysql / -postgresql / -ldap, whose unit and process names do not
+# match "pure-ftpd" -- so a CyberPanel host with FTP running reported "none".
+# The unit is no better a witness: on that host pure-ftpd-mysql.service read
+# "active (exited)" while the daemon had died at startup. Pure-FTPd's process
+# title is "pure-ftpd (SERVER)" whatever the package is called.
 FTPD="none detected"
-for u in proftpd pure-ftpd vsftpd; do
-  systemctl is-active "$u" >/dev/null 2>&1 && FTPD="$u"
-done
-[ "$FTPD" = "none detected" ] && pgrep -x proftpd >/dev/null 2>&1 && FTPD="proftpd"
-[ "$FTPD" = "none detected" ] && pgrep -x pure-ftpd >/dev/null 2>&1 && FTPD="pure-ftpd"
+if   pgrep -x proftpd >/dev/null 2>&1;     then FTPD="proftpd"
+elif pgrep -f '^pure-ftpd' >/dev/null 2>&1; then FTPD="pure-ftpd"
+elif pgrep -x vsftpd >/dev/null 2>&1;      then FTPD="vsftpd"
+fi
 log "  FTP daemon: $FTPD"
-grep -rhiE 'OK LOGIN|Login successful' \
-  /var/log/pureftpd.log /var/log/xferlog /var/log/proftpd/ /var/log/messages \
-  /var/log/secure 2>/dev/null | tail -25 | cap
+# FTP daemons log to their own file on some systems and to the general system
+# log on others: /var/log/messages or /var/log/secure on RHEL, /var/log/syslog
+# on Debian and Ubuntu, which was not read at all. General logs are filtered to
+# FTP daemon lines first, so an SMTP "SASL authentication failed" is not
+# counted as an FTP brute force.
+ftplines() {
+  grep -rhs '' /var/log/pureftpd.log /var/log/xferlog /var/log/proftpd/ 2>/dev/null
+  grep -hsE 'pure-ftpd|proftpd|vsftpd' /var/log/messages /var/log/secure /var/log/syslog 2>/dev/null
+  return 0
+}
+# "is now logged in" is what Pure-FTPd actually writes for a successful login
+# (observed on Ubuntu 24.04); the other two cover proftpd and older formats.
+ftplines | grep -iE 'OK LOGIN|Login successful|is now logged in' | tail -25 | cap
 sub "FTP login FAILURES -- brute force against panel FTP accounts"
-grep -rhiE 'authentication failed|Login failed|no such user' \
-  /var/log/pureftpd.log /var/log/proftpd/ /var/log/messages 2>/dev/null \
-  | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort | uniq -c | sort -rn | head -15 | cap
+# One source per line: Pure-FTPd writes the client as "(user@host)", proftpd as
+# "host (1.2.3.4[1.2.3.4])". Taking every IP on the line counted proftpd twice,
+# and a client shown by hostname was not counted at all.
+ftplines | grep -iE 'authentication failed|Login failed|no such user' \
+  | awk '{ if (match($0, /@[^) ]+\)/)) { print substr($0, RSTART + 1, RLENGTH - 2); next }
+           if (match($0, /[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/)) print substr($0, RSTART, RLENGTH) }' \
+  | sort | uniq -c | sort -rn | head -15 | cap
 sub "log files that were truncated or deleted (anti-forensics)"
 find /var/log -maxdepth 2 -type f -size 0 -mtime -"$DAYS" 2>/dev/null | cap
 
@@ -1168,6 +1194,29 @@ if [ "${#ROOTS[@]}" -gt 0 ]; then
       plesk db -Ne "SELECT h.www_root, d.name FROM hosting h JOIN domains d ON d.id = h.dom_id" \
         2>/dev/null >> "$DOMMAP"
     fi
+    # OpenLiteSpeed -- CyberPanel, or OLS on its own -- declares each virtual
+    # host in httpd_config.conf (name, vhRoot) and its docRoot in a per-vhost
+    # file, both written in terms of $VH_NAME / $VH_ROOT. Checked on CyberPanel
+    # 3.0, including a child domain whose docRoot sits inside its parent's.
+    OLSCONF=/usr/local/lsws/conf/httpd_config.conf
+    if [ -f "$OLSCONF" ]; then
+      for vc in /usr/local/lsws/conf/vhosts/*/vhost.conf; do
+        [ -f "$vc" ] || continue
+        vn=$(basename "$(dirname "$vc")")
+        vr=$(awk -v n="$vn" 'tolower($1) == "virtualhost" { f = ($2 == n) }
+                             f && $1 == "vhRoot" { print $2; exit }' "$OLSCONF")
+        vr=${vr//\$VH_NAME/$vn}
+        [ -z "$vr" ] && vr="/home/$vn"
+        case "$vr" in /*) ;; *) vr="/usr/local/lsws/$vr" ;; esac
+        dr=$(awk '$1 == "docRoot" { print $2; exit }' "$vc")
+        dr=${dr//\$VH_ROOT/$vr}; dr=${dr//\$VH_NAME/$vn}
+        dr=$(printf '%s' "$dr" | tr -s '/' | sed 's:/$::')
+        dm=$(awk '$1 == "vhDomain" { print $2; exit }' "$vc")
+        dm=${dm//\$VH_NAME/$vn}; dm=${dm%%,*}
+        [ -z "$dm" ] && dm=$vn
+        [ -n "$dr" ] && printf '%s\t%s\n' "$dr" "$dm" >> "$DOMMAP"
+      done
+    fi
     for r in "${ROOTS[@]}"; do
       dom=$(printf '%s\n' "$r" | sed -n 's|^/home/[^/]*/domains/\([^/]*\)/.*|\1|p')
       [ -n "$dom" ] && printf '%s\t%s\n' "$r" "$dom" >> "$DOMMAP"
@@ -1175,8 +1224,12 @@ if [ "${#ROOTS[@]}" -gt 0 ]; then
 
     # Inside this loop use echo, not log: the whole loop is piped through cap,
     # which already writes to the report, so log would record every line twice.
+    # Every domain whose document root lies at or under a scanned root is
+    # fetched. Matching the root exactly missed subdomains and child domains:
+    # their roots sit inside the parent's, so they are not scanned roots of
+    # their own, yet each is a separate site that can serve its own injection.
     for r in "${ROOTS[@]}"; do
-      doms=$(awk -F'\t' -v r="$r" '$1 == r { print $2 }' "$DOMMAP" | sort -u)
+      doms=$(awk -F'\t' -v r="$r" '$1 == r || index($1, r "/") == 1 { print $2 }' "$DOMMAP" | sort -u)
       if [ -z "$doms" ]; then
         echo "  no domain known for $r -- NOT fetched"
         continue
@@ -1186,10 +1239,16 @@ if [ "${#ROOTS[@]}" -gt 0 ]; then
         : > "$A"; : > "$B"
         # -k: a compromised site with an expired or self-signed certificate is
         # still serving its visitors, and what it serves is the question here.
-        curl -skL --max-time 20 "https://$dom/" -o "$A" 2>/dev/null; rc_a=$?
-        curl -skL --max-time 20 -A "$UA_M" -e 'https://www.google.com/' "https://$dom/" -o "$B" 2>/dev/null
+        # Plain HTTP is tried when HTTPS gets no answer: a site without a
+        # certificate has no 443 listener at all on OpenLiteSpeed, and HTTPS
+        # only meant such a site was never checked.
+        for sch in https http; do
+          curl -skL --max-time 20 "$sch://$dom/" -o "$A" 2>/dev/null; rc_a=$?
+          curl -skL --max-time 20 -A "$UA_M" -e 'https://www.google.com/' "$sch://$dom/" -o "$B" 2>/dev/null
+          { [ -s "$A" ] || [ -s "$B" ]; } && break
+        done
         if [ -s "$A" ] || [ -s "$B" ]; then
-          echo "  fetched $dom  (plain: $(wc -c < "$A" | tr -d ' ') bytes, mobile+referrer: $(wc -c < "$B" | tr -d ' ') bytes)"
+          echo "  fetched $sch://$dom/  (plain: $(wc -c < "$A" | tr -d ' ') bytes, mobile+referrer: $(wc -c < "$B" | tr -d ' ') bytes)"
           d=$(diff <(grep -oE '<script[^>]*>' "$A" 2>/dev/null | sort -u) \
                    <(grep -oE '<script[^>]*>' "$B" 2>/dev/null | sort -u) 2>/dev/null)
           [ -n "$d" ] && { echo "  CLOAKING DIFFERENCE  $dom"; printf '%s\n' "$d" | sed 's/^/    /'; }
