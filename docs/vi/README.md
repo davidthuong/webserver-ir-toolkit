@@ -1,5 +1,7 @@
 # Bộ công cụ xử lý sự cố web server
 
+[![tests](https://github.com/davidthuong/webserver-ir-toolkit/actions/workflows/tests.yml/badge.svg)](https://github.com/davidthuong/webserver-ir-toolkit/actions/workflows/tests.yml)
+
 Công cụ triage **chỉ đọc** và quy trình xử lý cho server shared hosting bị webshell —
 DirectAdmin, Plesk, cPanel hoặc không panel, trên Apache, nginx, OpenLiteSpeed và
 LiteSpeed Enterprise.

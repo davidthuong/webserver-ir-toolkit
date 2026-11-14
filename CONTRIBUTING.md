@@ -46,7 +46,11 @@ bit and directory entry, runs the scanner against that tree alone, and diffs.
 | 1 | fail — a file that existed before the scan is gone; the guarantee is broken |
 | 2 | inconclusive — the environment interfered, so the run proved nothing either way |
 
-Run it on a server, not a workstation. Endpoint antivirus quarantines the deliberately
+Both this check and the signature test below run in CI on every pull request, across six
+Linux environments — see [.github/workflows/tests.yml](.github/workflows/tests.yml). If you have
+no Linux host, push to a fork and read the result there. Exit 2 fails the job on purpose.
+
+To run it yourself, use a server, not a workstation. Endpoint antivirus quarantines the deliberately
 malware-shaped files the test creates, and a file your AV removed looks exactly like one the
 scanner removed — which is why the script tracks paths that were already unreadable before the
 scan started and excludes them from the verdict instead of reporting a false failure.

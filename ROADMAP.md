@@ -32,18 +32,26 @@ The two signature rows are not the same claim. The first is what real malware di
 patterns once; the second is what anyone can re-run after changing them. Neither replaces the
 other, and the reason the corpus is synthetic is that this repository does not carry malware.
 
-One caveat on that second row, stated in the spirit of the rest of this document: the test
-runner's pattern layer has been exercised on real code, but its end-to-end layer — the one that
-runs the scanner and reads the report back — has so far been driven against a stub that
-fabricates a report, not against `webshell-triage.sh` on Linux. It refuses to run on anything
-that is not Linux rather than reporting a platform difference as a defect, so on a workstation
-it returns exit 2. Running it once on a real host would close that gap.
+Both self-checks run in [CI](.github/workflows/tests.yml) on every push and pull request: on
+an Ubuntu runner as root, and inside CentOS 7, AlmaLinux 8 and 9, Debian 12 and Ubuntu 24.04
+containers. That is where the end-to-end layer of the signature test — the one that runs the
+scanner and reads the report back — first met `webshell-triage.sh` itself rather than a stub
+that fabricates a report. On all six the scanner completed its 20 sections and the report
+named every fixture.
+
+What a green run does not cover, stated in the spirit of the rest of this document: anything
+shaped like a control panel. No runner has DirectAdmin, Plesk or cPanel installed, so CI
+exercises the scanner on that OS, bash and grep against a synthetic webroot, and says nothing
+about panel detection, per-user crontabs or panel log paths. The table below is unchanged by
+it. The field verification behind that table came from one production host the maintainers no
+longer have access to, so those rows are a record of what was observed, not something that is
+re-checked on each change.
 
 ### Platform coverage
 
 | Stack | Status |
 |---|---|
-| CentOS 7 / RHEL family | **Verified in the field** |
+| CentOS 7 / RHEL family | **Verified in the field** on CentOS 7; AlmaLinux 8 and 9 in CI only |
 | DirectAdmin | **Verified in the field** |
 | OpenLiteSpeed | **Verified in the field** — including that `.htaccess` is silently ignored |
 | ProFTPD | **Verified in the field** |
@@ -54,7 +62,7 @@ it returns exit 2. Running it once on a real host would close that gap.
 | nginx | From documentation |
 | LiteSpeed Enterprise | From documentation — the edition split matters and the script refuses to guess it |
 | CyberPanel, Virtualmin | Log paths only |
-| Debian / Ubuntu | From documentation |
+| Debian / Ubuntu | Scanner and both self-checks run in CI; package and log paths from documentation, not run on a compromised host |
 
 Two features have never been exercised against a real compromise: `--http` (black-box fetch
 and cloaking diff) and `--checksums` (WordPress package verification). The second is,

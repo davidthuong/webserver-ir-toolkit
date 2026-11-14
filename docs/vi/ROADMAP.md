@@ -31,17 +31,25 @@ Hai dòng về signature **không** nói cùng một điều. Dòng đầu là k
 bộ pattern, một lần; dòng sau là thứ bất kỳ ai cũng chạy lại được sau khi sửa pattern. Không
 cái nào thay được cái nào, và lý do bộ mẫu là tổng hợp: repo này không chứa mã độc thật.
 
-Một điểm cần nói rõ về dòng thứ hai, đúng tinh thần của tài liệu này: lớp kiểm pattern đã chạy
-trên code thật, nhưng lớp đầu-cuối — lớp chạy scanner rồi đọc ngược report — mới chỉ được kiểm
-bằng một scanner giả sinh ra report, **chưa** chạy với `webshell-triage.sh` thật trên Linux. Nó
-từ chối chạy trên nền tảng không phải Linux thay vì báo khác biệt nền tảng thành lỗi, nên trên
-máy trạm sẽ trả về exit 2. Chạy một lần trên host thật là đủ để khoá lại khoảng trống này.
+Cả hai bài tự kiểm chạy trong [CI](../../.github/workflows/tests.yml) ở mỗi lần push và mỗi
+pull request: trên runner Ubuntu với quyền root, và trong container CentOS 7, AlmaLinux 8 và 9,
+Debian 12, Ubuntu 24.04. Đó là nơi lớp đầu-cuối của bài test signature — lớp chạy scanner rồi
+đọc ngược report — lần đầu chạy với chính `webshell-triage.sh` thay vì một scanner giả sinh ra
+report. Trên cả sáu môi trường, scanner chạy trọn 20 section và report gọi tên đủ mọi fixture.
+
+Điều một lần chạy xanh **không** chứng minh, nói rõ đúng tinh thần của tài liệu này: bất cứ thứ
+gì liên quan tới control panel. Không runner nào cài DirectAdmin, Plesk hay cPanel, nên CI chỉ
+kiểm scanner trên hệ điều hành, bash và grep đó với một webroot tổng hợp, và không nói gì về
+việc nhận diện panel, crontab theo user hay đường dẫn log của panel. Bảng bên dưới không đổi vì
+nó. Phần kiểm chứng thực tế đứng sau bảng đó đến từ một host production mà nhóm duy trì không
+còn quyền truy cập, nên các dòng ấy là ghi nhận về thứ đã quan sát được, không phải thứ được
+kiểm lại sau mỗi thay đổi.
 
 ### Phạm vi nền tảng
 
 | Stack | Trạng thái |
 |---|---|
-| CentOS 7 / dòng RHEL | **Đã kiểm chứng thực tế** |
+| CentOS 7 / dòng RHEL | **Đã kiểm chứng thực tế** trên CentOS 7; AlmaLinux 8 và 9 mới chỉ trong CI |
 | DirectAdmin | **Đã kiểm chứng thực tế** |
 | OpenLiteSpeed | **Đã kiểm chứng thực tế** — gồm cả việc `.htaccess` bị bỏ qua trong im lặng |
 | ProFTPD | **Đã kiểm chứng thực tế** |
@@ -52,7 +60,7 @@ máy trạm sẽ trả về exit 2. Chạy một lần trên host thật là đ�
 | nginx | Theo tài liệu |
 | LiteSpeed Enterprise | Theo tài liệu — phân biệt edition rất quan trọng, và script **từ chối đoán** |
 | CyberPanel, Virtualmin | Chỉ mới có đường dẫn log |
-| Debian / Ubuntu | Theo tài liệu |
+| Debian / Ubuntu | Scanner và cả hai bài tự kiểm chạy trong CI; đường dẫn package và log viết theo tài liệu, chưa chạy trên host bị chiếm |
 
 Hai tính năng **chưa từng dùng** trên sự cố thật: `--http` (fetch black-box và so sánh
 cloaking) và `--checksums` (đối chiếu package WordPress). Cái thứ hai xét về cấu trúc là check

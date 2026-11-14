@@ -1,5 +1,7 @@
 # Web Server Incident Response Toolkit
 
+[![tests](https://github.com/davidthuong/webserver-ir-toolkit/actions/workflows/tests.yml/badge.svg)](https://github.com/davidthuong/webserver-ir-toolkit/actions/workflows/tests.yml)
+
 Read-only triage tooling and field procedures for shared-hosting servers compromised by
 webshells — DirectAdmin, Plesk, cPanel, or no panel at all, across Apache, nginx,
 OpenLiteSpeed and LiteSpeed Enterprise.
