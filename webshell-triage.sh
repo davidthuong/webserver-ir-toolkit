@@ -1095,17 +1095,19 @@ if [ "${#ROOTS[@]}" -gt 0 ]; then
       #
       # Dropping to the directory owner grants the code only the privilege it
       # already had, so there is nothing to escalate.
+      # echo, not log, inside this loop: it is piped through cap, which already
+      # writes to the report, so log recorded each of these lines twice.
       owner=$(stat -c '%U' "$r" 2>/dev/null)
-      log "  --- $r   (as ${owner:-root})"
+      echo "  --- $r   (as ${owner:-root})"
       if [ -n "${owner:-}" ] && [ "$owner" != "root" ] && have sudo; then
         sudo -u "$owner" -- wp --path="$r" --skip-plugins --skip-themes \
           core verify-checksums 2>&1 | head -25 | sed 's/^/    /'
         sudo -u "$owner" -- wp --path="$r" --skip-plugins --skip-themes \
           plugin verify-checksums --all 2>&1 | head -40 | sed 's/^/    /'
       else
-        log "    !! cannot drop privileges (owner='${owner:-?}', sudo present=$(have sudo && echo yes || echo no))."
-        log "    !! SKIPPED rather than run wp-cli as root against a suspect site."
-        log "    !! Run it manually as that user:  sudo -u <user> wp --path=$r core verify-checksums"
+        echo "    !! cannot drop privileges (owner='${owner:-?}', sudo present=$(have sudo && echo yes || echo no))."
+        echo "    !! SKIPPED rather than run wp-cli as root against a suspect site."
+        echo "    !! Run it manually as that user:  sudo -u <user> wp --path=$r core verify-checksums"
       fi
     done | cap
   elif have wp; then
@@ -1148,21 +1150,57 @@ if [ "${#ROOTS[@]}" -gt 0 ]; then
     # commonly appear only for a search-engine referrer or a mobile agent, and
     # never for a logged-in administrator -- so two requests are compared.
     UA_M='Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15'
+    # Which domain a webroot answers to. Only DirectAdmin puts the domain in the
+    # path; cPanel and Plesk record it, so ask them. This used to derive the
+    # domain from the path alone, which meant that on every panel except
+    # DirectAdmin the loop skipped each root and the section printed nothing --
+    # indistinguishable from "fetched every site and found them clean".
+    DOMMAP="$WORK/dommap"          # lines of: <document root><TAB><domain>
+    : > "$DOMMAP"
+    for f in /var/cpanel/userdata/*/*; do
+      [ -f "$f" ] || continue
+      case "$f" in *.cache|*.json|*.yaml|*_SSL|*/main) continue ;; esac
+      dr=$(sed -n 's/^documentroot:[[:space:]]*//p' "$f" 2>/dev/null | head -n 1)
+      sn=$(sed -n 's/^servername:[[:space:]]*//p' "$f" 2>/dev/null | head -n 1)
+      [ -n "$dr" ] && [ -n "$sn" ] && printf '%s\t%s\n' "$dr" "$sn" >> "$DOMMAP"
+    done
+    if have plesk; then
+      plesk db -Ne "SELECT h.www_root, d.name FROM hosting h JOIN domains d ON d.id = h.dom_id" \
+        2>/dev/null >> "$DOMMAP"
+    fi
     for r in "${ROOTS[@]}"; do
       dom=$(printf '%s\n' "$r" | sed -n 's|^/home/[^/]*/domains/\([^/]*\)/.*|\1|p')
-      [ -z "$dom" ] && continue
-      A="$WORK/fetch_a" ; B="$WORK/fetch_b"
-      curl -sL --max-time 20 "https://$dom/" -o "$A" 2>/dev/null
-      curl -sL --max-time 20 -A "$UA_M" -e 'https://www.google.com/' "https://$dom/" -o "$B" 2>/dev/null
-      if [ -s "$A" ] || [ -s "$B" ]; then
-        d=$(diff <(grep -oE '<script[^>]*>' "$A" 2>/dev/null | sort -u) \
-                 <(grep -oE '<script[^>]*>' "$B" 2>/dev/null | sort -u) 2>/dev/null)
-        [ -n "$d" ] && { log "  CLOAKING DIFFERENCE  $dom"; printf '%s\n' "$d" | sed 's/^/    /' | cap; }
-        for pat in 'atob(' 'fromCharCode' 'documentElement.appendChild' 'navigator.clipboard'; do
-          grep -qF "$pat" "$A" 2>/dev/null && log "  $dom  serves: $pat"
-          grep -qF "$pat" "$B" 2>/dev/null && log "  $dom  serves (mobile/referrer): $pat"
-        done
+      [ -n "$dom" ] && printf '%s\t%s\n' "$r" "$dom" >> "$DOMMAP"
+    done
+
+    # Inside this loop use echo, not log: the whole loop is piped through cap,
+    # which already writes to the report, so log would record every line twice.
+    for r in "${ROOTS[@]}"; do
+      doms=$(awk -F'\t' -v r="$r" '$1 == r { print $2 }' "$DOMMAP" | sort -u)
+      if [ -z "$doms" ]; then
+        echo "  no domain known for $r -- NOT fetched"
+        continue
       fi
+      for dom in $doms; do
+        A="$WORK/fetch_a" ; B="$WORK/fetch_b"
+        : > "$A"; : > "$B"
+        # -k: a compromised site with an expired or self-signed certificate is
+        # still serving its visitors, and what it serves is the question here.
+        curl -skL --max-time 20 "https://$dom/" -o "$A" 2>/dev/null; rc_a=$?
+        curl -skL --max-time 20 -A "$UA_M" -e 'https://www.google.com/' "https://$dom/" -o "$B" 2>/dev/null
+        if [ -s "$A" ] || [ -s "$B" ]; then
+          echo "  fetched $dom  (plain: $(wc -c < "$A" | tr -d ' ') bytes, mobile+referrer: $(wc -c < "$B" | tr -d ' ') bytes)"
+          d=$(diff <(grep -oE '<script[^>]*>' "$A" 2>/dev/null | sort -u) \
+                   <(grep -oE '<script[^>]*>' "$B" 2>/dev/null | sort -u) 2>/dev/null)
+          [ -n "$d" ] && { echo "  CLOAKING DIFFERENCE  $dom"; printf '%s\n' "$d" | sed 's/^/    /'; }
+          for pat in 'atob(' 'fromCharCode' 'documentElement.appendChild' 'navigator.clipboard'; do
+            grep -qF "$pat" "$A" 2>/dev/null && echo "  $dom  serves: $pat"
+            grep -qF "$pat" "$B" 2>/dev/null && echo "  $dom  serves (mobile/referrer): $pat"
+          done
+        else
+          echo "  $dom  could NOT be fetched (curl exit $rc_a) -- nothing was checked for this site"
+        fi
+      done
     done | cap
   else
     sub "black-box fetch  [SKIPPED -- pass --http to enable]"

@@ -67,6 +67,13 @@ cloaking) và `--checksums` (đối chiếu package WordPress). Cái thứ hai x
 mạnh nhất trong toàn bộ toolkit, vì nó hỏi file có khớp bản upstream phát hành hay không, chứ
 không hỏi nó có giống thứ ai đó từng mô tả hay không.
 
+Cả hai giờ đã chạy trong lab, trên một site WordPress 7.1 dưới cPanel với các thay đổi cố ý và
+vô hại. `--checksums` báo đúng một file core bị sửa, một file thêm vào core, một file plugin bị
+sửa và một file thêm vào plugin. `--http` báo đúng một thẻ script chỉ phục vụ cho thiết bị di
+động đến từ công cụ tìm kiếm — sau khi sửa, vì trước đó nó suy ra tên miền từ đường dẫn kiểu
+DirectAdmin và lặng lẽ không fetch gì trên mọi panel khác. Không kết quả nào nói lên chúng sẽ
+ra sao trước một kẻ tấn công đang cố vượt qua chúng.
+
 ---
 
 ## Sắp làm

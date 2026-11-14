@@ -69,6 +69,13 @@ and cloaking diff) and `--checksums` (WordPress package verification). The secon
 structurally, the strongest check in the toolkit, because it asks whether files match what
 upstream shipped rather than whether they resemble something previously described.
 
+Both have now been run in a lab, on a WordPress 7.1 site under cPanel with deliberate, harmless
+changes. `--checksums` reported a modified core file, a file added to core, a modified plugin
+file and a file added to a plugin. `--http` reported a script tag served only to a mobile agent
+arriving from a search engine — after a fix, because until then it derived the domain from a
+DirectAdmin-style path and silently fetched nothing on any other panel. Neither result says
+how they fare against an attacker who is trying to defeat them.
+
 ---
 
 ## Next
