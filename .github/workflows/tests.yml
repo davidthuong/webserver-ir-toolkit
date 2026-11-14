@@ -35,7 +35,7 @@ jobs:
     env:
       IR_TEST_TIMEOUT: "600"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: every script parses
         run: |
@@ -87,7 +87,7 @@ jobs:
     steps:
       # Checked out on the runner and mounted in, not `container:` -- the
       # checkout action needs a newer glibc than CentOS 7 has.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # The repository is mounted read-only: neither test has any business
       # writing next to the code, and this makes that a fact rather than a habit.

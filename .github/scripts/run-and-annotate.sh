@@ -28,7 +28,10 @@ RC=${PIPESTATUS[0]}
 encode() { sed -e 's/%/%25/g' -e 's/\r//g' | awk '{ printf "%s%%0A", $0 }'; }
 
 if [ "$RC" = "0" ]; then
-  VERDICT=$(grep -E '^PASS' "$OUT" | tail -n 1)
+  # The scanner-exit line rides along with the verdict on purpose. A scanner
+  # that died in section 1 also leaves a tree byte-identical, so "PASS" is only
+  # worth reading next to how many sections actually ran.
+  VERDICT=$( { grep -E 'scanner exit:' "$OUT"; sed -n '/^PASS/,$p' "$OUT"; } | encode )
   echo "::notice title=$TITLE::${VERDICT:-exit 0}"
 else
   echo "::error title=$TITLE (exit $RC)::$(tail -n 25 "$OUT" | encode)"
