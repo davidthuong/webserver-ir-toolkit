@@ -49,18 +49,18 @@ kiểm lại sau mỗi thay đổi.
 
 | Stack | Trạng thái |
 |---|---|
-| CentOS 7 / dòng RHEL | **Đã kiểm chứng thực tế** trên CentOS 7; AlmaLinux 8 và 9 mới chỉ trong CI |
+| CentOS 7 / dòng RHEL | **Đã kiểm chứng thực tế** trên CentOS 7; máy lab AlmaLinux 9.7 (Virtualmin); AlmaLinux 8 mới chỉ trong CI |
 | DirectAdmin | **Đã kiểm chứng thực tế** |
 | OpenLiteSpeed | **Đã kiểm chứng thực tế** — gồm cả việc `.htaccess` bị bỏ qua trong im lặng |
 | ProFTPD | **Đã kiểm chứng thực tế** |
 | Imunify360 | **Đã kiểm chứng thực tế** trên bản có license. Agent 8.11 do cPanel cài kèm (bản miễn phí ImunifyAV) đã kiểm trong lab: CLI và định dạng config khác, và scanner giờ nói rõ nó gặp sản phẩm nào |
-| Apache | Một phần — đã xử lý đường dẫn và `AllowOverride`, chưa chạy trên host Apache bị chiếm |
+| Apache | Đã kiểm trong lab với Apache 2.4 trên AlmaLinux 9 dưới Virtualmin, và với EasyApache của cPanel: nhận diện web server, `AllowOverride`, log theo site, và tên miền cho `--http` đọc từ các khối `<VirtualHost>`. Chưa chạy trên host Apache bị chiếm |
 | Plesk | Đã kiểm trong lab trên Plesk Obsidian 18.0.82 (image container của hãng, service khởi động tay, không có systemd): nhận diện panel, document root đọc từ database của panel, scheduled task, mô hình nginx đứng trước Apache và log theo từng site. Lần chạy đó tìm ra bốn lỗi, đều thuộc loại "section rỗng trông như sạch". Chưa chạy trên host Plesk bị chiếm |
 | cPanel | Đã kiểm trong lab trên cPanel & WHM 138 (Ubuntu 24.04, cài thật, license trial, một account có subdomain và addon domain): nhận diện panel, document root đọc từ `/var/cpanel/userdata` kể cả addon domain nằm ngoài `public_html`, crontab theo user, đường dẫn EasyApache và `AllowOverride`, PHP binary, log đăng nhập, và các file `.gz` theo tháng mà cPanel dồn access log vào. Mẫu thử là tổng hợp; chưa chạy trên host cPanel bị chiếm |
 | nginx | Theo tài liệu |
 | LiteSpeed Enterprise | Theo tài liệu — phân biệt edition rất quan trọng, và script **từ chối đoán** |
 | CyberPanel | Đã kiểm trong lab trên CyberPanel 3.0 với OpenLiteSpeed 2.5.7 (Ubuntu 24.04, cài thật, một site có child domain): nhận diện panel, document root, crontab theo user, access log theo site, đăng nhập Pure-FTPd đọc từ `/var/log/syslog`, và tên miền cho `--http` đọc từ cấu hình vhost của OpenLiteSpeed. Lần chạy đó tìm ra ba lỗi: không nhận ra panel, báo không có FTP trong khi FTP đang chạy, và `--http` không tải site nào. Mẫu thử là tổng hợp; chưa chạy trên host CyberPanel bị chiếm |
-| Virtualmin | Chỉ mới có đường dẫn log |
+| Virtualmin | Đã kiểm trong lab trên Virtualmin 8.3 GPL (AlmaLinux 9.7, LAMP, ProFTPD, một virtual server có sub-server) bằng `tools/lab-check.sh`: 10/10. Lần chạy đó tìm ra ba lỗi: không nhận ra panel, `--http` không biết tên miền của site chính, và đăng nhập ProFTPD qua PAM không khớp mẫu FTP nào. Mẫu thử là tổng hợp; chưa chạy trên host Virtualmin bị chiếm |
 | Debian / Ubuntu | Scanner và cả hai bài tự kiểm chạy trong CI và trên một host Ubuntu 24.04 thật không có panel; đường dẫn package và log viết theo tài liệu, chưa chạy trên host bị chiếm |
 
 Hai tính năng **chưa từng dùng** trên sự cố thật: `--http` (fetch black-box và so sánh

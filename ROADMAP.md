@@ -51,18 +51,18 @@ re-checked on each change.
 
 | Stack | Status |
 |---|---|
-| CentOS 7 / RHEL family | **Verified in the field** on CentOS 7; AlmaLinux 8 and 9 in CI only |
+| CentOS 7 / RHEL family | **Verified in the field** on CentOS 7; AlmaLinux 9.7 lab host (Virtualmin); AlmaLinux 8 in CI only |
 | DirectAdmin | **Verified in the field** |
 | OpenLiteSpeed | **Verified in the field** — including that `.htaccess` is silently ignored |
 | ProFTPD | **Verified in the field** |
 | Imunify360 | **Verified in the field** on the licensed product. Agent 8.11 as bundled by cPanel (the free ImunifyAV tier) lab-checked: its CLI and config output differ, and the scanner now says which product it found |
-| Apache | Partially — paths and `AllowOverride` handling implemented, not run on a compromised Apache host |
+| Apache | Lab-checked as Apache 2.4 on AlmaLinux 9 under Virtualmin, and as cPanel's EasyApache: web server detection, `AllowOverride`, per-site logs, and `--http` domains read from `<VirtualHost>` blocks. Not run on a compromised Apache host |
 | Plesk | Lab-checked on Plesk Obsidian 18.0.82 (vendor container image, services started by hand, no systemd): panel detection, document roots read from the panel database, scheduled tasks, the nginx-in-front-of-Apache stack and per-site logs. That run found four defects, all of the "empty section reads as clean" kind. Not run on a compromised Plesk host |
 | cPanel | Lab-checked on cPanel & WHM 138 (Ubuntu 24.04, real install, trial licence, one account with a subdomain and addon domains): panel detection, document roots read from `/var/cpanel/userdata` including an addon domain outside `public_html`, user crontabs, EasyApache paths and `AllowOverride`, PHP binaries, login logs, and the monthly `.gz` archives cPanel moves access logs into. Fixtures were synthetic; not run on a compromised cPanel host |
 | nginx | From documentation |
 | LiteSpeed Enterprise | From documentation — the edition split matters and the script refuses to guess it |
 | CyberPanel | Lab-checked on CyberPanel 3.0 with OpenLiteSpeed 2.5.7 (Ubuntu 24.04, real install, one site with a child domain): panel detection, document roots, user crontabs, per-site access logs, Pure-FTPd logins read from `/var/log/syslog`, and `--http` domains read from the OpenLiteSpeed vhost configs. That run found three defects: no panel label, an FTP daemon reported as absent while running, and `--http` fetching nothing. Fixtures were synthetic; not run on a compromised CyberPanel host |
-| Virtualmin | Log paths only |
+| Virtualmin | Lab-checked on Virtualmin 8.3 GPL (AlmaLinux 9.7, LAMP, ProFTPD, one virtual server with a sub-server) with `tools/lab-check.sh`: 10/10. That run found three defects: no panel label, `--http` unable to name the main site, and ProFTPD logins through PAM matched by neither FTP check. Fixtures were synthetic; not run on a compromised Virtualmin host |
 | Debian / Ubuntu | Scanner and both self-checks run in CI and on one real Ubuntu 24.04 host with no panel; package and log paths from documentation, not run on a compromised host |
 
 Two features have never been exercised against a real compromise: `--http` (black-box fetch

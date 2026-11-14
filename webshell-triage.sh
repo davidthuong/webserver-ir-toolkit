@@ -147,6 +147,8 @@ fi
 # CyberPanel: the Django app plus its own web daemon, lscpd. Both are required,
 # so a CyberCP directory left behind by an uninstall does not count.
 [ -d /usr/local/CyberCP ] && [ -x /usr/local/lscp/bin/lscpd ] && PANELS+=("CyberPanel")
+# Virtualmin: the CLI plus the Webmin module that holds its domain records.
+[ -x /usr/sbin/virtualmin ] && [ -d /etc/webmin/virtual-server ] && PANELS+=("Virtualmin")
 
 case "${#PANELS[@]}" in
   0) log "panel detected: unknown -- no panel binary found" ;;
@@ -162,7 +164,7 @@ esac
 sub "panel evidence on disk (so a wrong label above is debuggable)"
 for p in /usr/local/directadmin/directadmin /usr/sbin/plesk /usr/local/psa/version \
          /usr/local/psa /opt/psa /usr/local/cpanel/cpanel /usr/local/cpanel \
-         /usr/local/CyberCP /usr/local/lscp/bin/lscpd; do
+         /usr/local/CyberCP /usr/local/lscp/bin/lscpd /usr/sbin/virtualmin /etc/webmin/virtual-server; do
   [ -e "$p" ] && log "  present: $p"
 done
 
@@ -173,6 +175,9 @@ have plesk && log "Plesk version: $(plesk version 2>/dev/null | head -3)"
   log "cPanel version: $(/usr/local/cpanel/cpanel -V 2>/dev/null | head -1)"
 [ -f /usr/local/CyberCP/version.txt ] && \
   log "CyberPanel version: $(head -c 200 /usr/local/CyberCP/version.txt 2>/dev/null)"
+for m in /usr/libexec/webmin/virtual-server/module.info /usr/share/webmin/virtual-server/module.info; do
+  [ -f "$m" ] && { log "Virtualmin version: $(sed -n 's/^version=//p' "$m" | head -1)"; break; }
+done
 
 ROOTS=()
 add_root() { [ -d "$1" ] && ROOTS+=("$1"); }
@@ -887,14 +892,17 @@ ftplines() {
   grep -hsE 'pure-ftpd|proftpd|vsftpd' /var/log/messages /var/log/secure /var/log/syslog 2>/dev/null
   return 0
 }
-# "is now logged in" is what Pure-FTPd actually writes for a successful login
-# (observed on Ubuntu 24.04); the other two cover proftpd and older formats.
-ftplines | grep -iE 'OK LOGIN|Login successful|is now logged in' | tail -25 | cap
+# Formats observed on real hosts, not assumed: Pure-FTPd writes "is now logged
+# in" (Ubuntu 24.04). ProFTPD authenticating through PAM on RHEL writes only
+# pam_unix lines -- "session opened for user" and "authentication failure" --
+# and with neither pattern present, both checks were silent on a Virtualmin
+# host with ProFTPD (AlmaLinux 9). "Login successful" is ProFTPD's own wording.
+ftplines | grep -iE 'OK LOGIN|Login successful|is now logged in|session opened for user' | tail -25 | cap
 sub "FTP login FAILURES -- brute force against panel FTP accounts"
 # One source per line: Pure-FTPd writes the client as "(user@host)", proftpd as
 # "host (1.2.3.4[1.2.3.4])". Taking every IP on the line counted proftpd twice,
 # and a client shown by hostname was not counted at all.
-ftplines | grep -iE 'authentication failed|Login failed|no such user' \
+ftplines | grep -iE 'authentication failed|authentication failure|Login failed|no such user' \
   | awk '{ if (match($0, /@[^) ]+\)/)) { print substr($0, RSTART + 1, RLENGTH - 2); next }
            if (match($0, /[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/)) print substr($0, RSTART, RLENGTH) }' \
   | sort | uniq -c | sort -rn | head -15 | cap
@@ -1194,6 +1202,23 @@ if [ "${#ROOTS[@]}" -gt 0 ]; then
       plesk db -Ne "SELECT h.www_root, d.name FROM hosting h JOIN domains d ON d.id = h.dom_id" \
         2>/dev/null >> "$DOMMAP"
     fi
+    # Apache virtual hosts: ServerName and DocumentRoot inside each
+    # <VirtualHost> block. This covers any Apache host, panel or not --
+    # Virtualmin writes its vhosts straight into httpd.conf, and before this a
+    # Virtualmin site whose root carries no domain name was never fetched.
+    # Checked on Virtualmin 8.3 / AlmaLinux 9. A ServerName with a port has it
+    # stripped; quoted roots are unquoted. Missing config files are skipped.
+    awk 'tolower($1) == "<virtualhost" { inv = 1; sn = ""; dr = ""; next }
+         inv && tolower($1) == "servername"   { sn = $2 }
+         inv && tolower($1) == "documentroot" { dr = $2 }
+         tolower($1) == "</virtualhost>" {
+           if (sn != "" && dr != "") { gsub(/"/, "", dr); sub(/\/$/, "", dr); sub(/:[0-9]+$/, "", sn)
+                                       print dr "\t" sn }
+           inv = 0 }' \
+      /etc/httpd/conf/httpd.conf /etc/httpd/conf.d/*.conf \
+      /etc/apache2/apache2.conf /etc/apache2/sites-enabled/* \
+      /etc/apache2/conf/httpd.conf /usr/local/apache/conf/httpd.conf 2>/dev/null >> "$DOMMAP"
+
     # OpenLiteSpeed -- CyberPanel, or OLS on its own -- declares each virtual
     # host in httpd_config.conf (name, vhRoot) and its docRoot in a per-vhost
     # file, both written in terms of $VH_NAME / $VH_ROOT. Checked on CyberPanel
