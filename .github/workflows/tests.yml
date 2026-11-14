@@ -1,0 +1,110 @@
+name: tests
+
+# The toolkit's two self-checks, run on real Linux for every change:
+#
+#   tools/verify-readonly.sh   the scanner leaves a webroot byte-identical
+#   tools/test-signatures.sh   the patterns detect what they claim, flag nothing
+#                              clean, and the findings reach the REPORT FILE
+#
+# Both need Linux with GNU coreutils, and both create malware-shaped fixtures
+# that endpoint antivirus on a workstation quarantines mid-test. A CI runner is
+# the one place every contributor has that is Linux, disposable and has no AV.
+#
+# What this does NOT prove: anything about a control panel. No runner has
+# DirectAdmin, Plesk or cPanel installed, so panel detection, per-user crontabs
+# and panel log paths are untouched by these jobs. ROADMAP.md keeps that
+# distinction; a green badge here must not be read as widening it.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runner:
+    name: ubuntu runner (host, as root)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      IR_TEST_TIMEOUT: "600"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: every script parses
+        run: |
+          rc=0
+          for f in webshell-triage.sh tools/*.sh .github/scripts/*.sh; do
+            bash -n "$f" || rc=1
+          done
+          exit $rc
+
+      # sudo, because that is how the scanner is run in the field and several
+      # sections read paths only root can. -E keeps IR_TEST_TIMEOUT.
+      - name: read-only guarantee
+        run: >
+          bash .github/scripts/run-and-annotate.sh "read-only / runner"
+          sudo -E bash tools/verify-readonly.sh
+
+      - name: signatures, both layers
+        if: always()
+        run: >
+          bash .github/scripts/run-and-annotate.sh "signatures / runner"
+          sudo -E bash tools/test-signatures.sh -v
+
+  distro:
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # CentOS 7 is the only OS the scanner has been run on in the field,
+          # and it ships bash 4.2 / grep 2.20 -- old enough that array handling
+          # under `set -u` and some regex forms behave differently. Its package
+          # mirrors are gone, so it runs on the base image with nothing added;
+          # that also exercises every "is this tool installed" guard.
+          - image: centos:7
+            setup: "true"
+          - image: almalinux:8
+            setup: dnf -y -q install findutils diffutils procps-ng iproute hostname gawk
+          - image: almalinux:9
+            setup: dnf -y -q install findutils diffutils procps-ng iproute hostname gawk
+          - image: debian:12
+            setup: apt-get update -qq && apt-get install -y -qq procps iproute2
+          - image: ubuntu:24.04
+            setup: apt-get update -qq && apt-get install -y -qq procps iproute2
+    env:
+      IMAGE: ${{ matrix.image }}
+      SETUP: ${{ matrix.setup }}
+    steps:
+      # Checked out on the runner and mounted in, not `container:` -- the
+      # checkout action needs a newer glibc than CentOS 7 has.
+      - uses: actions/checkout@v4
+
+      # The repository is mounted read-only: neither test has any business
+      # writing next to the code, and this makes that a fact rather than a habit.
+      - name: start container
+        run: |
+          docker run -d --name lab -e IR_TEST_TIMEOUT=600 \
+            -v "$PWD:/src:ro" "$IMAGE" sleep infinity
+          docker exec lab bash -c "$SETUP"
+          docker exec lab bash -c 'echo "bash $BASH_VERSION"; grep --version | head -n 1; cat /etc/os-release | head -n 2'
+
+      - name: read-only guarantee
+        run: >
+          bash .github/scripts/run-and-annotate.sh "read-only / $IMAGE"
+          docker exec lab bash /src/tools/verify-readonly.sh
+
+      - name: signatures, both layers
+        if: always()
+        run: >
+          bash .github/scripts/run-and-annotate.sh "signatures / $IMAGE"
+          docker exec lab bash /src/tools/test-signatures.sh -v

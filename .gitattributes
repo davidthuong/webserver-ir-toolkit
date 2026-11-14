@@ -3,3 +3,6 @@
 *.sh    text eol=lf
 *.md    text eol=lf
 .gitignore text eol=lf
+
+# CI: chạy trên runner Linux, bắt buộc LF
+*.yml   text eol=lf
