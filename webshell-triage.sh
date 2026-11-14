@@ -187,14 +187,42 @@ else
   for d in /var/www/vhosts/*/httpdocs /var/www/vhosts/*/*/httpdocs /var/www/vhosts/*/subdomains/*; do
     add_root "$d"
   done
-  # generic
-  for d in /var/www/html /var/www /usr/share/nginx/html /srv/www /opt/lampp/htdocs; do
+  # Plesk records every document root, and that record is the only complete
+  # list: a subdomain or additional domain gets a directory named by whoever
+  # created it (observed on Plesk 18: <subscription>/site1), which no glob can
+  # anticipate. The globs above stay as the fallback for when the database
+  # cannot be read -- which is exactly when a panel is most likely to be broken.
+  if have plesk; then
+    PLESK_ROOTS=$(plesk db -Ne "SELECT www_root FROM hosting" 2>/dev/null) || PLESK_ROOTS=""
+    if [ -n "$PLESK_ROOTS" ]; then
+      while IFS= read -r d; do
+        case "$d" in /*) add_root "$d" ;; esac
+      done <<< "$PLESK_ROOTS"
+    else
+      log "!! could not read document roots from the Plesk database; using path"
+      log "!! patterns only. Subdomains outside httpdocs/ may NOT be scanned."
+    fi
+    add_root /var/www/vhosts/default/htdocs
+  fi
+  # generic. On a Plesk host /var/www is not a webroot but the parent of every
+  # subscription plus the panel's own state (vhosts/system, vhosts/chroot):
+  # scanning it reads each site twice and reports the panel's files as findings.
+  if [ -d /var/www/vhosts ]; then
+    add_root /var/www/html
+  else
+    for d in /var/www/html /var/www; do add_root "$d"; done
+  fi
+  for d in /usr/share/nginx/html /srv/www /opt/lampp/htdocs; do
     add_root "$d"
   done
 fi
 
-# de-duplicate, drop nested duplicates of /var/www when vhosts exist
-mapfile -t ROOTS < <(printf '%s\n' "${ROOTS[@]:-}" | awk 'NF' | sort -u)
+# De-duplicate, and drop any root that lies inside another root: the parent
+# already covers it, and scanning both prints every finding twice and doubles
+# the I/O. Sorted in the C locale so a parent always precedes its children.
+mapfile -t ROOTS < <(printf '%s\n' "${ROOTS[@]:-}" | awk 'NF' | sed 's:/*$::' \
+  | LC_ALL=C sort -u | awk '{ for (i = 1; i <= n; i++) if (index($0, keep[i] "/") == 1) next
+                             keep[++n] = $0; print }')
 if [ "${#ROOTS[@]}" -eq 0 ]; then
   log "!! no webroot found -- pass one with --root /path"
 else
@@ -235,6 +263,13 @@ if [ -d /usr/local/lsws ]; then
   log "litespeed version string: ${lsver:-<unreadable>}"
 elif have nginx && { systemctl is-active nginx >/dev/null 2>&1 || pgrep -x nginx >/dev/null 2>&1; }; then
   WEBSRV="nginx"
+  # nginx holding 80/443 does not mean nginx serves the site. Plesk's default
+  # stack is nginx in front of Apache on 127.0.0.1:7080/7081, with every request
+  # proxied through -- and there .htaccess IS read. Calling that host "nginx"
+  # told the responder that the one mitigation that works does not.
+  if pgrep -x apache2 >/dev/null 2>&1 || pgrep -x httpd >/dev/null 2>&1; then
+    WEBSRV="nginx + Apache (proxy)"
+  fi
 elif have httpd || have apache2; then
   WEBSRV="Apache"
 fi
@@ -291,11 +326,31 @@ case "$HTACCESS" in
     log "  !! See docs: MITIGATION.md (section 16 covers client-side injection)"
     ;;
   yes*)
+    if [ "$WEBSRV" = "nginx + Apache (proxy)" ]; then
+      log "  nginx and Apache are both running. .htaccess is read only for requests"
+      log "  nginx hands to Apache -- it may serve static files itself, and a site"
+      log "  whose PHP is passed straight to PHP-FPM by nginx bypasses it entirely."
+      log "  Test the rule with curl against a .php AND a static file before relying on it."
+      # Plesk writes one nginx config per site, so the exceptions can be named.
+      if [ -d /var/www/vhosts/system ]; then
+        sub "Plesk sites where nginx does NOT hand PHP to Apache (.htaccess not consulted)"
+        for f in /var/www/vhosts/system/*/conf/nginx.conf; do
+          [ -f "$f" ] || continue
+          site=${f#/var/www/vhosts/system/}; site=${site%%/*}
+          if grep -q 'fastcgi_pass' "$f" 2>/dev/null; then
+            log "  $site  -- PHP served by nginx via FPM"
+          elif ! grep -qE 'proxy_pass[^;]*:708[01]' "$f" 2>/dev/null; then
+            log "  $site  -- no proxy to Apache found (nginx-only hosting?)"
+          fi
+        done
+      fi
+    fi
     log "  AllowOverride must include AuthConfig or Limit for 'Require' to work;"
     log "  if it does not, Apache returns 500 for the whole directory."
     sub "AllowOverride in effect"
     grep -rhs 'AllowOverride' /etc/httpd/conf/httpd.conf /etc/apache2/apache2.conf \
-      /usr/local/directadmin/data/users/*/httpd.conf /etc/httpd/conf.d/ 2>/dev/null \
+      /usr/local/directadmin/data/users/*/httpd.conf /etc/httpd/conf.d/ \
+      /etc/apache2/plesk.conf.d/server.conf /var/www/vhosts/system/*/conf/httpd.conf 2>/dev/null \
       | sort -u | head -10 | cap
     ;;
 esac
@@ -396,7 +451,16 @@ if [ -d /usr/local/directadmin/data/users ]; then
 fi
 if have plesk; then
   sub "Plesk scheduled tasks"
-  plesk db -Ne "SELECT id,type,command,active FROM ScheduledTasks" 2>/dev/null | cap
+  # The column list is tried first and SELECT * second, and a failure of both
+  # is printed rather than swallowed. This query named a column that does not
+  # exist (`active`; it is `isActive` on Plesk 18), so with stderr discarded
+  # the section was empty on every Plesk host -- which reads as "no tasks".
+  if   pt=$(plesk db -Ne "SELECT id,sysUserLogin,isActive,type,command,arguments FROM ScheduledTasks" 2>&1); then :
+  elif pt=$(plesk db -Ne "SELECT * FROM ScheduledTasks" 2>&1); then :
+  else
+    log "  !! could not read ScheduledTasks -- this check did NOT run. Plesk said:"
+  fi
+  [ -n "$pt" ] && printf '%s\n' "$pt" | cap
 fi
 
 sub "systemd units modified in last ${DAYS}d"
@@ -1044,7 +1108,8 @@ sort -u "$ARTIFACTS" 2>/dev/null | grep -E '^/'   | grep -vF -e "$WORK" -e "$OUT
 # Signature hits belong in the same picture.
 [ -s "$CAND" ] && cat "$CAND" >> "$ALL"
 sort -u "$ALL" -o "$ALL" 2>/dev/null
-NART=$(grep -c . "$ALL" 2>/dev/null || echo 0)
+# grep -c prints 0 AND exits 1 on no match, so `|| echo 0` yields two lines
+NART=$(grep -c . "$ALL" 2>/dev/null); NART=${NART:-0}
 
 log ""
 log "== AFFECTED ACCOUNTS =========================================="
@@ -1093,7 +1158,7 @@ if [ "${NART:-0}" -gt 0 ]; then
     log "  not the date of entry. Emptied files keep the mtime they were emptied at,"
     log "  and anything the attacker removed leaves no timestamp at all."
     log ""
-    NTL=$(grep -c . "$TL" 2>/dev/null || echo 0)
+    NTL=$(grep -c . "$TL" 2>/dev/null); NTL=${NTL:-0}
     if [ "${NTL:-0}" -le 24 ]; then
       # head -12 and tail -12 overlap below 24 entries, which reprints the oldest
       # rows under a "newest" heading and makes the timeline read as nonsense.

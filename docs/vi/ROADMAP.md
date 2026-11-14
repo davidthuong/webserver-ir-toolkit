@@ -55,12 +55,12 @@ kiểm lại sau mỗi thay đổi.
 | ProFTPD | **Đã kiểm chứng thực tế** |
 | Imunify360 | **Đã kiểm chứng thực tế** |
 | Apache | Một phần — đã xử lý đường dẫn và `AllowOverride`, chưa chạy trên host Apache bị chiếm |
-| Plesk | Theo tài liệu |
+| Plesk | Đã kiểm trong lab trên Plesk Obsidian 18.0.82 (image container của hãng, service khởi động tay, không có systemd): nhận diện panel, document root đọc từ database của panel, scheduled task, mô hình nginx đứng trước Apache và log theo từng site. Lần chạy đó tìm ra bốn lỗi, đều thuộc loại "section rỗng trông như sạch". Chưa chạy trên host Plesk bị chiếm |
 | cPanel | Theo tài liệu |
 | nginx | Theo tài liệu |
 | LiteSpeed Enterprise | Theo tài liệu — phân biệt edition rất quan trọng, và script **từ chối đoán** |
 | CyberPanel, Virtualmin | Chỉ mới có đường dẫn log |
-| Debian / Ubuntu | Scanner và cả hai bài tự kiểm chạy trong CI; đường dẫn package và log viết theo tài liệu, chưa chạy trên host bị chiếm |
+| Debian / Ubuntu | Scanner và cả hai bài tự kiểm chạy trong CI và trên một host Ubuntu 24.04 thật không có panel; đường dẫn package và log viết theo tài liệu, chưa chạy trên host bị chiếm |
 
 Hai tính năng **chưa từng dùng** trên sự cố thật: `--http` (fetch black-box và so sánh
 cloaking) và `--checksums` (đối chiếu package WordPress). Cái thứ hai xét về cấu trúc là check

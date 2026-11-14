@@ -57,12 +57,12 @@ re-checked on each change.
 | ProFTPD | **Verified in the field** |
 | Imunify360 | **Verified in the field** |
 | Apache | Partially — paths and `AllowOverride` handling implemented, not run on a compromised Apache host |
-| Plesk | From documentation |
+| Plesk | Lab-checked on Plesk Obsidian 18.0.82 (vendor container image, services started by hand, no systemd): panel detection, document roots read from the panel database, scheduled tasks, the nginx-in-front-of-Apache stack and per-site logs. That run found four defects, all of the "empty section reads as clean" kind. Not run on a compromised Plesk host |
 | cPanel | From documentation |
 | nginx | From documentation |
 | LiteSpeed Enterprise | From documentation — the edition split matters and the script refuses to guess it |
 | CyberPanel, Virtualmin | Log paths only |
-| Debian / Ubuntu | Scanner and both self-checks run in CI; package and log paths from documentation, not run on a compromised host |
+| Debian / Ubuntu | Scanner and both self-checks run in CI and on one real Ubuntu 24.04 host with no panel; package and log paths from documentation, not run on a compromised host |
 
 Two features have never been exercised against a real compromise: `--http` (black-box fetch
 and cloaking diff) and `--checksums` (WordPress package verification). The second is,
