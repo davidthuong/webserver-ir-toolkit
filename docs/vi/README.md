@@ -60,7 +60,7 @@ Tuỳ chọn:
 --days N        cửa sổ thời gian cho phần "file mới sửa" (mặc định 30)
 --root PATH     GIỚI HẠN scan vào đúng đường dẫn này; bỏ auto-detect (dùng nhiều lần được)
 --out FILE      chỗ ghi báo cáo (mặc định /root/triage-<host>-<time>.txt)
---checksums     đối chiếu package WordPress với wordpress.org (chậm, check mạnh nhất)
+--checksums     đối chiếu core WordPress và Joomla với bản phát hành chính thức (chậm, check mạnh nhất)
 --http          gọi thêm HTTP tới từng site (section 17, mặc định tắt)
 --no-nice       không hạ ưu tiên CPU/IO
 ```
@@ -146,6 +146,14 @@ nhúng hợp lệ. Nội dung trái với phần mở rộng của chính nó. V
 `wp plugin verify-checksums` — chỉ hỏi file có khớp với bản wordpress.org phát hành hay không,
 nên báo được mọi file core bị sửa và mọi file lạ trong thư mục plugin, bất kể nội dung hay mức độ
 obfuscate. Đây là check duy nhất ở đây tìm được họ mã độc mà chưa ai từng thấy.
+
+Joomla không có lệnh tương đương, nên `--checksums` tự làm việc đó: đọc phiên bản của từng site từ
+`administrator/manifests/files/joomla.xml`, tải gói Full Package chính thức đúng phiên bản đó từ
+GitHub releases của dự án, rồi so từng file. Nó báo mọi file core khác với bản phát hành — PHP, và
+cả JavaScript trong `media/` là nơi mã chèn phía trình duyệt nằm — cùng mọi file PHP không có trong
+bản phát hành nhưng nằm trong một thư mục có trong bản phát hành, đúng chỗ backdoor bị thả vào thư
+mục component của core. Extension cài vào thư mục riêng nên không bị báo. Site nào không tải được
+bản phát hành sẽ bị ghi là chưa kiểm, không bị bỏ qua. Không có gì được thực thi.
 
 Với `--http`, script gọi mỗi site hai lần — bình thường, và giả khách mobile đến từ Google — rồi
 so sánh các thẻ script. Cách này bắt được inject nằm trong **database** hoặc trong **cấu hình web

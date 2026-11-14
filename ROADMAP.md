@@ -28,6 +28,7 @@ Documentation is maintained in English and Vietnamese with parity.
 | Signature regression corpus | 22/22 detected, 0/24 false positives, 21/21 patterns exercised, 2/2 section 7 fixtures reported | `tools/test-signatures.sh`, checked in and repeatable: one synthetic fixture per pattern, plus clean controls — including one for each false positive the clean corpus exposed. Verified to fail on a broken pattern, a deleted pattern, a greedy pattern and an empty report |
 | Anti-cleanup + client-side injection | 5/5 detected, 0/7 false positives | Samples recovered from a live compromise, including a repeating-key XOR loader |
 | Generic detection thresholds | separates cleanly | Measured: a malicious payload carried a 56,030-char base64 run against 1,467 for a legitimately embedded icon |
+| Joomla core integrity (`--checksums`) | 5/5 tampered files reported, 0 false reports on three untouched releases | Lab: untouched Joomla 3.10.12, 5.3.4 and 6.2.0 releases gave 0 modified / 0 added; a 6.2.0 site with a modified core PHP file, modified core JS, and PHP dropped into a core component directory, the site root and `libraries/vendor` had all five reported, while `configuration.php`, the runtime `autoload_psr4.php`, a third-party component and plugin, and page cache were not. A non-existent version was reported as not verified |
 | Read-only guarantee | PASS | Full 20-section run over a fixture tree; sha256, permissions and directory listing identical before and after |
 
 These rows are not the same claim. The two corpus rows are the only measurement against a large
@@ -66,7 +67,7 @@ re-checked on each change.
 | ProFTPD | **Verified in the field** |
 | Imunify360 | **Verified in the field** on the licensed product. Agent 8.11 as bundled by cPanel (the free ImunifyAV tier) lab-checked: its CLI and config output differ, and the scanner now says which product it found |
 | Apache | Lab-checked as Apache 2.4 on AlmaLinux 9 under Virtualmin, and as cPanel's EasyApache: web server detection, `AllowOverride`, per-site logs, and `--http` domains read from `<VirtualHost>` blocks. Not run on a compromised Apache host |
-| Plesk | Lab-checked on Plesk Obsidian 18.0.82 (vendor container image, services started by hand, no systemd): panel detection, document roots read from the panel database, scheduled tasks, the nginx-in-front-of-Apache stack and per-site logs. That run found four defects, all of the "empty section reads as clean" kind. Not run on a compromised Plesk host |
+| Plesk | Lab-checked on Plesk Obsidian 18.0.82 (vendor container image, services started by hand, no systemd): panel detection, document roots read from the panel database, scheduled tasks, the nginx-in-front-of-Apache stack and per-site logs. That run found four defects, all of the "empty section reads as clean" kind. Re-checked after the shared log, FTP and `--http` changes with `tools/lab-check.sh`: 10/10. `--http` was verified as far as reading domains from the panel database and fetching the right server; the container cannot run Plesk's Apache behind nginx without systemd, so the content comparison itself was exercised on cPanel and CyberPanel instead. Not run on a compromised Plesk host |
 | cPanel | Lab-checked on cPanel & WHM 138 (Ubuntu 24.04, real install, trial licence, one account with a subdomain and addon domains): panel detection, document roots read from `/var/cpanel/userdata` including an addon domain outside `public_html`, user crontabs, EasyApache paths and `AllowOverride`, PHP binaries, login logs, and the monthly `.gz` archives cPanel moves access logs into. Fixtures were synthetic; not run on a compromised cPanel host |
 | nginx | From documentation |
 | LiteSpeed Enterprise | From documentation — the edition split matters and the script refuses to guess it |
@@ -92,11 +93,10 @@ how they fare against an attacker who is trying to defeat them.
 
 Ordered by how much each reduces the chance of a report being quietly wrong.
 
-**Joomla integrity verification.** WordPress has `wp core verify-checksums` and
-`wp plugin verify-checksums`, and they are the only checks that reliably find a family nobody
-has described. Joomla ships no equivalent, and the current guidance — diff against a clean
-archive of the same version — is a manual procedure rather than a check. Joomla installations
-were the majority of compromised sites in the incident this toolkit came from.
+**Joomla extension integrity.** `--checksums` now verifies Joomla core against the official
+release. Third-party extensions are not covered: there is no central source of their releases,
+and they were where most of the incident's backdoors and entry points were. Verifying an
+installed extension against its own published package, where one can be found, is the next step.
 
 **CMS and extension inventory.** Producing a version list across every account on a host is
 mechanical and is the input to every "is this vulnerable" question. Vulnerability data itself

@@ -62,7 +62,7 @@ Options:
 --days N        window for the "recently modified" checks (default 30)
 --root PATH     RESTRICT the scan to this path; skips auto-detection (repeatable)
 --out FILE      report destination (default /root/triage-<host>-<time>.txt)
---checksums     verify WordPress packages against wordpress.org (slow, best check)
+--checksums     verify WordPress and Joomla core against the official release (slow, best check)
 --http          also fetch each site over the network (section 17, off by default)
 --no-nice       do not lower CPU/IO priority
 ```
@@ -151,6 +151,15 @@ And `wp core verify-checksums` plus `wp plugin verify-checksums`, which ask only
 matches what wordpress.org shipped — reporting any modified core file and any extra file in a
 plugin directory regardless of content, obfuscation or novelty. That is the one check here that
 reliably finds a family nobody has seen yet.
+
+Joomla ships no such command, so `--checksums` does the equivalent itself: it reads each site's
+version from `administrator/manifests/files/joomla.xml`, fetches the official Full Package of
+exactly that version from the project's GitHub releases, and compares file by file. It reports
+every core file that differs from the release — PHP, and the JavaScript under `media/` where
+client-side injection lives — and every PHP file that is not in the release but sits in a
+directory that is, which is where backdoors dropped into core component directories land.
+Extensions install into their own directories and are not reported. A site whose release cannot
+be fetched is reported as not verified rather than skipped. Nothing is executed.
 
 With `--http`, the scanner also fetches each site twice — plainly, and as a mobile visitor
 arriving from Google — and diffs the script tags. That catches injection stored in the database

@@ -1210,10 +1210,78 @@ if [ "${#ROOTS[@]}" -gt 0 ]; then
     log "  !! Then, AS THE SITE USER (not root -- wp-cli loads their wp-config.php):"
     log "  !!   sudo -u <siteuser> wp --path=<webroot> core verify-checksums"
   fi
-  log ""
-  log "  Joomla has no equivalent bundled command. Compare against a clean archive"
-  log "  of the same version instead:"
-  log "    diff -rq --exclude=images --exclude=cache <clean-unpack>/ <webroot>/"
+  sub "Joomla package integrity -- every core file against the official release"
+  # Joomla ships no verify-checksums command, so this does what one would: read
+  # the site's version, fetch the official Full Package of exactly that version
+  # from the project's GitHub releases into $WORK, and compare file by file.
+  #   MODIFIED  a file that ships with Joomla and differs from the release --
+  #             PHP or the JS under media/, where client-side injection lives
+  #   ADDED     a PHP file that is not in the release but sits in a directory
+  #             that is. Extensions install into their own directories, which
+  #             the release does not have, so they are not reported; backdoors
+  #             dropped into core component directories are (the shape seen
+  #             in administrator/components/com_* on a compromised host).
+  # Nothing is executed and nothing in the webroot is touched. A site whose
+  # release cannot be fetched is reported as NOT verified, never skipped.
+  # Counted before the loop: the loop runs in a pipeline, i.e. a subshell, and
+  # a counter incremented inside it would read 0 out here.
+  JCOUNT=0
+  for r in "${ROOTS[@]}"; do
+    [ -f "$r/administrator/manifests/files/joomla.xml" ] && JCOUNT=$((JCOUNT+1))
+  done
+  if [ "$DO_SUMS" = "1" ]; then
+    for r in "${ROOTS[@]}"; do
+      jx="$r/administrator/manifests/files/joomla.xml"
+      [ -f "$jx" ] || continue
+      jver=$(sed -n 's:.*<version>\([0-9][0-9.]*\)</version>.*:\1:p' "$jx" 2>/dev/null | head -n 1)
+      echo "  --- $r   (Joomla ${jver:-version unreadable})"
+      case "$jver" in
+        [0-9]*.[0-9]*.[0-9]*) ;;
+        *) echo "    !! version not readable from $jx -- NOT verified"; continue ;;
+      esac
+      pkg="$WORK/joomla-$jver"
+      if [ ! -f "$pkg.sums" ]; then
+        mkdir -p "$pkg"
+        url="https://github.com/joomla/joomla-cms/releases/download/$jver/Joomla_$jver-Stable-Full_Package.tar.gz"
+        if ! curl -fsSL --max-time 300 "$url" 2>/dev/null | tar -xz -C "$pkg" 2>/dev/null \
+           || [ ! -f "$pkg/administrator/manifests/files/joomla.xml" ]; then
+          echo "    !! could not fetch the official $jver release -- this site was NOT verified"
+          echo "    !!   $url"
+          rm -rf "$pkg"; continue
+        fi
+        ( cd "$pkg" && find . -type f -print0 | xargs -0 sha256sum ) > "$pkg.sums" 2>/dev/null
+        ( cd "$pkg" && find . -type d ) > "$pkg.dirs" 2>/dev/null
+        rm -rf "$pkg"
+      fi
+      # Hash only what the release contains, in one process per batch.
+      ( cd "$r" && sed 's/^[0-9a-f]*  //' "$pkg.sums" \
+          | while IFS= read -r p; do [ -f "$p" ] && printf '%s\n' "$p"; done \
+          | xargs -d '\n' -r sha256sum ) > "$WORK/jsite.sums" 2>/dev/null
+      # Runtime directories are left out of ADDED: Joomla 4+ writes
+      # administrator/cache/autoload_psr4.php itself, into a directory the
+      # release ships, and would be reported on every live site. PHP in cache,
+      # tmp, images and logs is section 12's job, which reports it regardless.
+      ( cd "$r" && find . \( -path ./cache -o -path ./administrator/cache -o -path ./tmp \
+          -o -path ./images -o -path ./logs -o -path ./administrator/logs \) -prune \
+          -o -type f \( -name '*.php' -o -name '*.php[0-9]' -o -name '*.phtml' \
+          -o -name '*.phar' -o -name '*.inc' \) ! -path './configuration.php' -print ) > "$WORK/jsite.php" 2>/dev/null
+      awk -v root="$r" '
+        FILENAME == ARGV[1] { h = $1; sub(/^[0-9a-f]*  /, ""); pkgsum[$0] = h; next }
+        FILENAME == ARGV[2] { pkgdir[$0] = 1; next }
+        FILENAME == ARGV[3] { h = $1; sub(/^[0-9a-f]*  /, "")
+                              if ($0 in pkgsum && pkgsum[$0] != h) { print "    MODIFIED " root substr($0, 2); nm++ }
+                              next }
+        { if (!($0 in pkgsum)) { d = $0; sub(/\/[^\/]*$/, "", d)
+                                 if (d in pkgdir) { print "    ADDED    " root substr($0, 2); na++ } } }
+        END { printf "    %d modified core file(s), %d PHP file(s) added inside core directories\n", nm, na }
+      ' "$pkg.sums" "$pkg.dirs" "$WORK/jsite.sums" "$WORK/jsite.php" 2>/dev/null
+    done | art | cap
+    [ "$JCOUNT" = "0" ] && log "  no Joomla installation among the scanned roots"
+  elif [ "$JCOUNT" -gt 0 ]; then
+    log "  [SKIPPED -- $JCOUNT Joomla site(s) found; pass --checksums to verify them against"
+    log "   the official release of their version. This is the check that finds a family"
+    log "   no signature knows.]"
+  fi
 
   sub "files whose extension does not match their content"
   # An extension is a claim, not a fact. One grep pass, not one per file.
