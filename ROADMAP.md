@@ -22,15 +22,24 @@ Documentation is maintained in English and Vietnamese with parity.
 
 | Layer | Result | Method |
 |---|---|---|
-| Webshell signatures | 16/16 detected, 0/12 false positives | 16 real shell forms against 12 clean-code controls chosen to be the constructs naive patterns trip on. A one-off measurement against live samples, not reproducible from this repository |
-| Signature regression corpus | 19/19 detected, 0/16 false positives, 19/19 patterns exercised | `tools/test-signatures.sh`, checked in and repeatable: one synthetic fixture per pattern, plus clean controls. Verified to fail on a broken pattern, a deleted pattern, a greedy pattern and an empty report |
+| Public malware corpus | **483/710 (68%)** detected by the content-based sections; signatures alone 373/710 (53%) | 710 unique PHP samples from four public collections — JohnTroony/php-webshells 52/65, bartblaze/PHP-backdoors (collected from compromised sites) 110/177, nikicat/web-malware-collection 120/161, tennc/webshell `php/` 201/307. Files containing PHP code, deduplicated by sha256, scanned with `--root` in batches of 80 so no section cap hid a result. Only sections 6, 7, 16 and 17 count; sections that list files for other reasons do not. Before this round: 455/710 |
+| Public clean corpus | **0 signature false positives** in ~33,700 PHP files; 90, 47 and 39 files named by heuristic sections 7, 16 and 17 for review (about 0.5%) | WordPress core with 12 popular plugins (WooCommerce, Elementor, Jetpack, Wordfence, Yoast, UpdraftPlus, WP File Manager and others), Joomla 6.2, Drupal 11.4, scanned in their real layout. Before this round the signatures flagged 8 of these files |
+| Webshell signatures, field | 16/16 detected, 0/12 false positives | 16 real shell forms against 12 clean-code controls chosen to be the constructs naive patterns trip on. A one-off measurement against live samples, not reproducible from this repository |
+| Signature regression corpus | 22/22 detected, 0/24 false positives, 21/21 patterns exercised, 2/2 section 7 fixtures reported | `tools/test-signatures.sh`, checked in and repeatable: one synthetic fixture per pattern, plus clean controls — including one for each false positive the clean corpus exposed. Verified to fail on a broken pattern, a deleted pattern, a greedy pattern and an empty report |
 | Anti-cleanup + client-side injection | 5/5 detected, 0/7 false positives | Samples recovered from a live compromise, including a repeating-key XOR loader |
 | Generic detection thresholds | separates cleanly | Measured: a malicious payload carried a 56,030-char base64 run against 1,467 for a legitimately embedded icon |
 | Read-only guarantee | PASS | Full 20-section run over a fixture tree; sha256, permissions and directory listing identical before and after |
 
-The two signature rows are not the same claim. The first is what real malware did against the
-patterns once; the second is what anyone can re-run after changing them. Neither replaces the
-other, and the reason the corpus is synthetic is that this repository does not carry malware.
+These rows are not the same claim. The two corpus rows are the only measurement against a large
+body of real malware and real clean code, and they are the honest headline: roughly a third of
+public webshells pass every content check. Of the 255 the earlier set missed, 61 contained no
+request input and no eval- or exec-like call at all — includes, fragments and configs from the
+collections rather than shells — so the miss rate on actual shells is lower than the raw figure,
+but not by enough to call the signatures sufficient. That is the reason the toolkit also leans on
+package verification (`--checksums`) and on a clean-time baseline, neither of which needs to
+recognise the malware. The field row is what one real incident's malware did once; the regression
+row is what anyone can re-run after changing a pattern. The corpora are not in this repository,
+which does not carry malware; the sources and method above are enough to rebuild them.
 
 Both self-checks run in [CI](.github/workflows/tests.yml) on every push and pull request: on
 an Ubuntu runner as root, and inside CentOS 7, AlmaLinux 8 and 9, Debian 12 and Ubuntu 24.04

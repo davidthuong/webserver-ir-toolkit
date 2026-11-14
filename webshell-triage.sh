@@ -600,25 +600,27 @@ sec "6. WEBSHELL SIGNATURE SCAN"
 SIG="$WORK/sig"
 : > "$SIG" || exit 1
 cat > "$SIG" <<'PATTERNS'
-eval[[:space:]]*\([[:space:]]*(base64_decode|gzinflate|gzuncompress|gzdecode|str_rot13|strrev|pack|hex2bin|convert_uudecode|urldecode)
+eval[[:space:]]*\([[:space:]]*(['"]\?>['"][[:space:]]*\.[[:space:]]*)?(base64_decode|gzinflate|gzuncompress|gzdecode|str_rot13|strrev|pack|hex2bin|convert_uudecode|urldecode)
 (eval|assert|create_function)[[:space:]]*\([^)]{0,120}\$_(GET|POST|REQUEST|COOKIE|SERVER|FILES)
 (call_user_func|call_user_func_array|array_map|usort|register_tick_function)[[:space:]]*\([[:space:]]*\$_(GET|POST|REQUEST|COOKIE)
-(system|shell_exec|passthru|popen|proc_open|pcntl_exec|exec)[[:space:]]*\([[:space:]]*(\$_(GET|POST|REQUEST|COOKIE)|\$[a-zA-Z_]+[[:space:]]*\.)
+(^|[^a-zA-Z0-9_>:$])(system|shell_exec|passthru|popen|proc_open|pcntl_exec|exec)[[:space:]]*\([[:space:]]*(\$_(GET|POST|REQUEST|COOKIE)|\$[a-zA-Z_]+[[:space:]]*\.)
 \$_(GET|POST|REQUEST|COOKIE)[[:space:]]*\[[^]]*\][[:space:]]*\(
-preg_replace[[:space:]]*\([[:space:]]*['"][^'"]*/[a-zA-Z]*e[a-zA-Z]*['"]
+preg_replace[[:space:]]*\([[:space:]]*['"](/[^'"]*/|#[^'"]*#)[imsxuADSUXJ]*e[imsxuADSUXJ]*['"]
 base64_decode[[:space:]]*\([[:space:]]*['"][A-Za-z0-9+/=]{120,}
-(gzinflate|gzuncompress|str_rot13)[[:space:]]*\([[:space:]]*base64_decode
+(gzinflate|gzuncompress|str_rot13)[[:space:]]*\([[:space:]]*base64_decode[[:space:]]*\([[:space:]]*['"][A-Za-z0-9+/=]{40,}
 \$\{[[:space:]]*['"]_(GET|POST|REQUEST|COOKIE)
 \$GLOBALS[[:space:]]*\[[[:space:]]*['"][^'"]{1,20}['"][[:space:]]*\][[:space:]]*\(
-(chr[[:space:]]*\([0-9]+\)[[:space:]]*\.[[:space:]]*){4,}
-FilesMan|WSOsetcookie|wso_|b374k|r57shell|c99shell|c100shell|IndoXploit|alfashell|ALFA_DATA|AnonymousFox|priv8|Marijuana|MiniShell|Zone-?H|Sh3ll|by\.?Orb|xIndoShell|GhostShell
-(passthru|shell_exec|system)[[:space:]]*\([[:space:]]*['"](wget|curl|python|perl|chmod|nc)[[:space:]]
+(chr[[:space:]]*\([[:space:]]*(6[5-9]|[7-9][0-9]|1[01][0-9]|12[0-2])[[:space:]]*\)[[:space:]]*\.[[:space:]]*){4,}
+FilesMan|WSOsetcookie|wso_|b374k|r57shell|c99shell|c100shell|IndoXploit|alfashell|ALFA_DATA|AnonymousFox|priv8|Marijuana|MiniShell|Zone-H([^a-zA-Z]|$)|zone-h\.org|Sh3ll|by\.?Orb|xIndoShell|GhostShell
+(^|[^a-zA-Z0-9_>:$])(passthru|shell_exec|system)[[:space:]]*\([[:space:]]*['"](wget|curl|python|perl|chmod|nc)[[:space:]]
 move_uploaded_file[[:space:]]*\([[:space:]]*\$_FILES[^;]*\$_(GET|POST|REQUEST)
 php://input.*eval|eval.*php://input
 (fsockopen|pfsockopen)[[:space:]]*\(.*(4444|1337|31337|9001)
-mail[[:space:]]*\(.*\$_(GET|POST|REQUEST).*\$_(GET|POST|REQUEST)
-str_replace[[:space:]]*\([^)]*\)[[:space:]]*\([[:space:]]*['"]?\$
+(^|[^a-zA-Z0-9_>:$])mail[[:space:]]*\(.*\$_(GET|POST|REQUEST).*\$_(GET|POST|REQUEST)
+str_replace[[:space:]]*\([^()]*\)[[:space:]]*\([[:space:]]*['"]?\$
 @?(ini_set|error_reporting)[[:space:]]*\([[:space:]]*['"]?(display_errors|0)['"]?[[:space:]]*,?[[:space:]]*(0|false|off)?[[:space:]]*\)[[:space:]]*;[[:space:]]*@?set_time_limit
+(=|echo|print|return|\()[[:space:]]*`[^`]*\$_(GET|POST|REQUEST|COOKIE)
+move_uploaded_file[[:space:]]*\([^;]*\$_FILES[^;]*\[[[:space:]]*['"]name['"][[:space:]]*\][[:space:]]*\)
 PATTERNS
 
 SCAN_INC=(--include='*.php' --include='*.php[0-9]' --include='*.phtml' --include='*.pht'
@@ -668,6 +670,49 @@ if [ "${#ROOTS[@]}" -gt 0 ]; then
     | while IFS= read -r f; do
         grep -qE '\$[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*\([[:space:]]*\$' "$f" 2>/dev/null && echo "$f"
       done | sort -u | cap
+fi
+
+sub "two-step command execution: \$v = ..\$_POST.. then system(\$v) or \`\$v\`  -- split-up shells"
+# The largest group the signatures missed on a public corpus of 710 webshells
+# and backdoors: the command arrives in one statement and runs in another --
+#   $c = isset($_POST['c']) ? $_POST['c'] : '';   echo shell_exec($c);   `$c`
+# Same principle as the check above: neither half alone, both in one file.
+# Measured on that corpus and on ~33,700 clean PHP files (WordPress core with
+# 12 popular plugins, Joomla 6, Drupal 11): 70 shells matched; of the 622 clean
+# files that assign from a superglobal, 0. An earlier version also counted
+# backticks anywhere and flagged 33 WordPress core files, whose docblocks
+# write `$action` in markdown style -- hence the expression-position rule.
+# One awk process per batch of files, never one per file.
+if [ "${#ROOTS[@]}" -gt 0 ]; then
+  grep -rlE '\$[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*=[^=;][^;]*\$_(GET|POST|REQUEST|COOKIE)' \
+    --include='*.php' "${ROOTS[@]}" 2>/dev/null \
+    | LC_ALL=C xargs -d '\n' -r awk '
+        function flush(  u) {
+          if (cur != "") for (u in use) if (u in src) { print cur; break }
+          split("", src); split("", use); cur = FILENAME
+        }
+        FNR == 1 { flush() }
+        {
+          line = $0
+          while (match(line, /\$[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=[^=;][^;]*\$_(GET|POST|REQUEST|COOKIE)/)) {
+            v = substr(line, RSTART, RLENGTH); sub(/[[:space:]]*=.*/, "", v); src[v] = 1
+            line = substr(line, RSTART + RLENGTH)
+          }
+          line = $0
+          while (match(line, /(system|passthru|shell_exec|exec|popen|proc_open|pcntl_exec)[[:space:]]*\([[:space:]]*\$[A-Za-z_][A-Za-z0-9_]*/)) {
+            pre = (RSTART > 1) ? substr(line, RSTART - 1, 1) : ""
+            if (pre !~ /[A-Za-z0-9_>:$]/) { u = substr(line, RSTART, RLENGTH); sub(/^[^$]*/, "", u); use[u] = 1 }
+            line = substr(line, RSTART + RLENGTH)
+          }
+          line = $0
+          # a backtick only where an expression can start: WordPress docblocks
+          # write `$action` in markdown style, and those are not commands
+          while (match(line, /(=|echo|print|return|\()[[:space:]]*`[[:space:]]*\$[A-Za-z_][A-Za-z0-9_]*/)) {
+            u = substr(line, RSTART, RLENGTH); sub(/^[^$]*/, "", u); use[u] = 1
+            line = substr(line, RSTART + RLENGTH)
+          }
+        }
+        END { flush() }' 2>/dev/null | sort -u | art | cap
 fi
 
 sub "PHP files with almost no whitespace / high symbol density"

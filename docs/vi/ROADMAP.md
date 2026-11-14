@@ -21,15 +21,24 @@ tương tự cho bộ pattern. Tài liệu duy trì song song tiếng Anh và ti
 
 | Lớp | Kết quả | Cách đo |
 |---|---|---|
-| Signature webshell | 16/16 phát hiện, 0/12 báo nhầm | 16 dạng shell thật, đối chứng bằng 12 mẫu code sạch chọn đúng những cấu trúc mà pattern viết vội hay báo nhầm. Là phép đo một lần trên mẫu sống, **không** chạy lại được từ repo này |
-| Bộ mẫu hồi quy cho signature | 19/19 phát hiện, 0/16 báo nhầm, 19/19 pattern có mẫu | `tools/test-signatures.sh`, commit kèm và chạy lại được: mỗi pattern một fixture tổng hợp, cộng các mẫu code sạch đối chứng. Đã kiểm là nó **thất bại đúng lúc cần** — pattern hỏng cú pháp, pattern bị xoá, pattern quá tham, và report rỗng |
+| Bộ mã độc công khai | **483/710 (68%)** bị các mục xét theo nội dung phát hiện; riêng signature 373/710 (53%) | 710 mẫu PHP không trùng từ bốn bộ sưu tập công khai — JohnTroony/php-webshells 52/65, bartblaze/PHP-backdoors (thu từ site bị chiếm) 110/177, nikicat/web-malware-collection 120/161, thư mục `php/` của tennc/webshell 201/307. Lấy các file chứa mã PHP, loại trùng theo sha256, quét bằng `--root` theo lô 80 file để giới hạn dòng của mỗi mục không che mất kết quả. Chỉ tính mục 6, 7, 16 và 17; không tính các mục liệt kê file vì lý do khác. Trước đợt này: 455/710 |
+| Bộ code sạch công khai | **0 báo nhầm signature** trên ~33.700 file PHP; các mục heuristic 7, 16, 17 nêu tên 90, 47 và 39 file để người xem xét (khoảng 0,5%) | WordPress core kèm 12 plugin phổ biến (WooCommerce, Elementor, Jetpack, Wordfence, Yoast, UpdraftPlus, WP File Manager và các plugin khác), Joomla 6.2, Drupal 11.4, quét nguyên cấu trúc thư mục thật. Trước đợt này signature báo nhầm 8 file trong số đó |
+| Signature webshell, thực tế | 16/16 phát hiện, 0/12 báo nhầm | 16 dạng shell thật, đối chứng bằng 12 mẫu code sạch chọn đúng những cấu trúc mà pattern viết vội hay báo nhầm. Là phép đo một lần trên mẫu sống, **không** chạy lại được từ repo này |
+| Bộ mẫu hồi quy cho signature | 22/22 phát hiện, 0/24 báo nhầm, 21/21 pattern có mẫu, 2/2 mẫu mục 7 được report nêu tên | `tools/test-signatures.sh`, commit kèm và chạy lại được: mỗi pattern một fixture tổng hợp, cộng các mẫu code sạch đối chứng — có một mẫu cho mỗi lỗi báo nhầm mà bộ code sạch làm lộ ra. Đã kiểm là nó **thất bại đúng lúc cần** — pattern hỏng cú pháp, pattern bị xoá, pattern quá tham, và report rỗng |
 | Chống dọn + inject client-side | 5/5 phát hiện, 0/7 báo nhầm | Mẫu lấy từ một vụ xâm nhập thật, gồm loader dùng XOR key lặp |
 | Ngưỡng phát hiện tổng quát | Phân biệt rõ | Đo thật: payload độc có chuỗi base64 **56.030** ký tự, icon nhúng hợp lệ **1.467** |
 | Đảm bảo chỉ đọc | PASS | Chạy trọn 20 section trên cây thử; sha256, quyền và danh sách file giống hệt trước/sau |
 
-Hai dòng về signature **không** nói cùng một điều. Dòng đầu là kết quả mã độc thật đối đầu với
-bộ pattern, một lần; dòng sau là thứ bất kỳ ai cũng chạy lại được sau khi sửa pattern. Không
-cái nào thay được cái nào, và lý do bộ mẫu là tổng hợp: repo này không chứa mã độc thật.
+Các dòng này **không** nói cùng một điều. Hai dòng bộ mẫu công khai là phép đo duy nhất trên một
+lượng lớn mã độc thật và code sạch thật, và đó là con số trung thực nhất: khoảng một phần ba
+webshell công khai lọt qua mọi kiểm tra theo nội dung. Trong 255 mẫu mà bộ pattern cũ bỏ sót, 61
+mẫu không đọc input nào và không gọi hàm kiểu eval hay exec nào — là file include, mảnh code và
+file cấu hình trong bộ sưu tập chứ không phải shell — nên tỉ lệ sót trên shell thật thấp hơn con
+số thô, nhưng không đủ thấp để coi signature là đủ. Đó là lý do toolkit còn dựa vào đối chiếu
+package (`--checksums`) và baseline lúc sạch, hai cách không cần nhận ra mã độc. Dòng thực tế là
+kết quả mã độc của một vụ thật, một lần; dòng hồi quy là thứ ai cũng chạy lại được sau khi sửa
+pattern. Các bộ mẫu không nằm trong repo này, vì repo không chứa mã độc; nguồn và phương pháp ở
+trên đủ để dựng lại.
 
 Cả hai bài tự kiểm chạy trong [CI](../../.github/workflows/tests.yml) ở mỗi lần push và mỗi
 pull request: trên runner Ubuntu với quyền root, và trong container CentOS 7, AlmaLinux 8 và 9,

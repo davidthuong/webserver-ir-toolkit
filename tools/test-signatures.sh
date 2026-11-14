@@ -89,7 +89,7 @@ mkdir -p "$MALDIR" "$CLEANDIR" || { echo "INCONCLUSIVE -- cannot build lab"; exi
 FAIL=0
 INCONCLUSIVE=0
 L2_RAN=0                       # layer 2 reached a verdict rather than being skipped
-NR6=0; NR16=0; NRFP=0
+NR6=0; NR7=0; NR16=0; NRFP=0
 
 # -----------------------------------------------------------------------------
 #  Extract the pattern set from the scanner -- one source of truth
@@ -127,10 +127,12 @@ echo
 # -----------------------------------------------------------------------------
 M6_NAME=();  M6_PATH=()
 M16_NAME=(); M16_PATH=()
+M7_NAME=();  M7_PATH=()
 CL_NAME=();  CL_PATH=()
 
 mal6()  { local f="$MALDIR/$1";   cat > "$f"; M6_NAME+=("$1");  M6_PATH+=("$f"); }
 mal16() { local f="$MALDIR/$1";   cat > "$f"; M16_NAME+=("$1"); M16_PATH+=("$f"); }
+mal7()  { local f="$MALDIR/$1";   cat > "$f"; M7_NAME+=("$1");  M7_PATH+=("$f"); }
 clean() { local f="$CLEANDIR/$1"; cat > "$f"; CL_NAME+=("$1");  CL_PATH+=("$f"); }
 
 # --- must be detected --------------------------------------------------------
@@ -173,7 +175,9 @@ EOF
 
 mal6 'layered-decoders.php' <<'EOF'
 <?php
-$stage = gzinflate(base64_decode($packed));
+// A packed payload carries its blob inline; decoding a variable is also what
+// Drupal core does legitimately, which is why the pattern now wants a literal.
+$stage = gzinflate(base64_decode('S0xMSk5JTUvPyMzKzsnNyy8oLCouKS0rr6isqq6prauvb2hsam5pbWvv6OzqBgA='));
 EOF
 
 mal6 'superglobal-by-name.php' <<'EOF'
@@ -229,6 +233,34 @@ EOF
 mal6 'silence-and-run-forever.php' <<'EOF'
 <?php
 @ini_set('display_errors', 0); @set_time_limit(0);
+EOF
+
+mal6 'eval-after-closing-tag.php' <<'EOF'
+<?php
+eval("?>" . gzuncompress(base64_decode($blob)));
+EOF
+
+mal6 'backtick-from-superglobal.php' <<'EOF'
+<?php
+echo `{$_GET['c']}`;
+EOF
+
+mal6 'upload-keeps-client-name.php' <<'EOF'
+<?php
+move_uploaded_file($_FILES['f']['tmp_name'], 'up/' . $_FILES['f']['name']);
+EOF
+
+# --- section 7 shapes: split across statements, no single line is enough -----
+mal7 'two-step-command.php' <<'EOF'
+<?php
+$c = isset($_POST['c']) ? $_POST['c'] : '';
+echo shell_exec($c);
+EOF
+
+mal7 'two-step-backtick.php' <<'EOF'
+<?php
+$cmd = trim($_REQUEST['x']);
+$out = `$cmd`;
 EOF
 
 # --- section 16 shapes: no PHP shell keyword appears at all ------------------
@@ -336,6 +368,56 @@ clean 'callback-dispatch.php' <<'EOF'
 $value = call_user_func( $callback, $args );
 EOF
 
+clean 'is-email-check.php' <<'EOF'
+<?php
+// WordPress network.php: is_email() is not mail().
+$admin_email = is_email( $_POST['email'] ) ? wp_unslash( $_POST['email'] ) : '';
+EOF
+
+clean 'private-and-pdo-exec.php' <<'EOF'
+<?php
+// WordPress class-ftp.php and any PDO code: a method called exec is not exec().
+$this->_exec($cmd . ' 2>&1', $out);
+$pdo->exec($sql . ';');
+EOF
+
+clean 'preg-replace-quoted-path.php' <<'EOF'
+<?php
+// UpdraftPlus: '/files"' is a path in a pattern, not a closing delimiter and /e.
+$line = preg_replace('/files"/', '"', $line);
+EOF
+
+clean 'cast-in-call-args.php' <<'EOF'
+<?php
+// Jetpack: a cast inside the arguments is not a call on the result.
+$name = str_replace( 'field-', '', (string) ( $block['name'] ?? '' ) );
+EOF
+
+clean 'png-header-bytes.php' <<'EOF'
+<?php
+// Drupal test: the PNG signature built byte by byte -- not letters of a name.
+$png = chr(137) . chr(80) . chr(78) . chr(71) . chr(13) . chr(10) . chr(26) . chr(10);
+EOF
+
+clean 'timezone-helper.php' <<'EOF'
+<?php
+// "ZoneH" in a class name and "zone-h" in a CSS class are not the defacement archive.
+$h = new TimeZoneHelper();
+echo '<h2 class="shipping-zone-heading">';
+EOF
+
+clean 'decode-compressed-arg.php' <<'EOF'
+<?php
+// Drupal UrlHelper: decompressing a decoded argument, no embedded blob.
+$return = @gzuncompress(base64_decode(str_replace(['-', '_'], ['+', '/'], $compressed)));
+EOF
+
+clean 'markdown-comment-superglobal.php' <<'EOF'
+<?php
+// Read the page argument: `$_GET['page']` is reliable this early. See `$_POST`.
+$page = isset( $_GET['page'] ) ? sanitize_key( $_GET['page'] ) : '';
+EOF
+
 clean 'jquery-domeval.js' <<'EOF'
 function DOMEval( code, node, doc ) {
 	doc = doc || document;
@@ -347,6 +429,7 @@ EOF
 
 NM6=${#M6_NAME[@]}
 NM16=${#M16_NAME[@]}
+NM7=${#M7_NAME[@]}
 NCL=${#CL_NAME[@]}
 
 # -----------------------------------------------------------------------------
@@ -519,6 +602,7 @@ if [ "$RUN_SCANNER" = "1" ]; then
 
   S6=$(block "6.")
   S16=$(block "16.")
+  S7=$(block "7.")
 
   if [ ! -s "$REPORT" ] || [ -z "$S6" ]; then
     INCONCLUSIVE=1
@@ -553,6 +637,17 @@ if [ "$RUN_SCANNER" = "1" ]; then
     done
 
     i=0
+    while [ "$i" -lt "$NM7" ]; do
+      if in_block "${M7_PATH[$i]}" "$S7"; then
+        NR7=$((NR7+1))
+      else
+        FAIL=1
+        echo "  ABSENT  ${M7_NAME[$i]} -- section 7 did not report this file"
+      fi
+      i=$((i+1))
+    done
+
+    i=0
     while [ "$i" -lt "$NCL" ]; do
       if in_block "${CL_PATH[$i]}" "$S6" || in_block "${CL_PATH[$i]}" "$S16"; then
         NRFP=$((NRFP+1)); FAIL=1
@@ -561,7 +656,7 @@ if [ "$RUN_SCANNER" = "1" ]; then
       i=$((i+1))
     done
 
-    echo "  section 6 reported $NR6/$NM6   section 16 reported $NR16/$NM16   clean files named: $NRFP"
+    echo "  section 6 reported $NR6/$NM6   section 7 reported $NR7/$NM7   section 16 reported $NR16/$NM16   clean files named: $NRFP"
 
     if [ "$NR6" = "0" ] && [ "$NDET" -gt 0 ]; then
       echo
@@ -585,7 +680,7 @@ if [ "$FAIL" = "1" ]; then
   echo "FAIL"
   echo "  patterns: detected $NDET/$NM6, false positives $NFP/$NCL, broken $NBROKEN"
   [ "$L2_RAN" = "1" ] && \
-  echo "  report:   section 6 named $NR6/$NM6, section 16 named $NR16/$NM16, clean files named $NRFP"
+  echo "  report:   section 6 named $NR6/$NM6, section 7 named $NR7/$NM7, section 16 named $NR16/$NM16, clean files named $NRFP"
   echo "  A pattern that adds one detection and two false positives is a regression."
   echo "  State both numbers in the pull request."
   exit 1
@@ -599,7 +694,7 @@ else
   echo "PASS -- $NDET/$NM6 shell forms detected, $NFP/$NCL clean samples flagged,"
   echo "        all $NPAT patterns compile."
   [ "$L2_RAN" = "1" ] && \
-  echo "        The report file named all $NR6 section 6 and $NR16 section 16 findings."
+  echo "        The report file named all $NR6 section 6, $NR7 section 7 and $NR16 section 16 findings."
   [ "$NUNCOVERED" -gt 0 ] && echo "        $NUNCOVERED pattern(s) have no fixture -- see the warning above."
   exit 0
 fi

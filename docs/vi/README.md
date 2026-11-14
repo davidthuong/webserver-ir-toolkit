@@ -161,20 +161,27 @@ WordPress.
 
 ## Độ tin cậy của signature
 
-Bộ 19 pattern được kiểm bằng 16 dạng webshell thật và 12 mẫu code sạch:
+Đo trên bộ mẫu công khai — 710 webshell và backdoor từ bốn bộ sưu tập công khai, và ~33.700 file
+PHP của WordPress core kèm 12 plugin phổ biến, Joomla và Drupal:
 
 | | |
 |---|---|
-| Phát hiện đúng | 16/16 |
-| Báo nhầm code sạch | 0/12 |
+| Mã độc bị các mục xét theo nội dung phát hiện | 483/710 (68%) |
+| Trong đó riêng 21 signature | 373/710 (53%) |
+| Signature báo nhầm code sạch | 0 |
+| File sạch bị mục heuristic nêu tên để xem xét | khoảng 0,5% |
 
-Mẫu đối chứng gồm đúng những cấu trúc mà pattern viết vội hay báo nhầm: `eval($template)`,
-`call_user_func($this->handler, $_POST['data'])`, base64 ngắn của icon,
-`$wpdb->prepare(..., $_GET['id'])`, và `array_map` với closure.
+Đọc thẳng dòng đầu: khoảng một phần ba webshell công khai lọt qua mọi kiểm tra theo nội dung. Vì
+vậy `--checksums` (file có khớp bản hãng phát hành không?) và baseline lúc sạch quan trọng hơn mọi
+pattern. Phương pháp, số liệu theo từng nguồn và giới hạn: [ROADMAP.md](ROADMAP.md).
 
-Shell chia 2 bước, tách variable function ra nhiều câu lệnh
-(`$f = $_POST['a']; $f($_POST['b']);`) được bắt bằng cách yêu cầu **cả hai** nửa cùng nằm trong
-một file, thay vì bằng pattern một dòng — chính điều đó giữ số false positive ở mức 0.
+Chính bộ code sạch giữ cho pattern trung thực. Nó làm lộ tám lỗi báo nhầm trong bộ cũ — `is_email(`
+bị đọc thành `mail(`, `$this->_exec(` thành `exec(`, class `TimeZoneHelper` thành trang lưu trữ
+deface Zone-H — mỗi lỗi đã sửa và có một mẫu sạch canh giữ trong `tools/test-signatures.sh`.
+
+Shell chia 2 bước, tách input và chỗ dùng nó ra nhiều câu lệnh
+(`$f = $_POST['a']; $f($_POST['b']);`, hoặc `$c = $_POST['c']; system($c);`) được bắt bằng cách
+yêu cầu **cả hai** nửa cùng nằm trong một file, thay vì bằng pattern một dòng.
 
 **Sửa `$SIG` thì phải test lại cả hai chiều** — chỉ một lệnh, và đã có sẵn trong repo:
 
