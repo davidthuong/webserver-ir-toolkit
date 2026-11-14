@@ -121,8 +121,8 @@ log "uptime:  $(uptime 2>/dev/null)"
 log "load:    $(cat /proc/loadavg 2>/dev/null)"
 sub "logged in / recent logins"
 # -w is not optional: without it `last` truncates the user column to 8 characters.
-# A panel FTP account named codexdeploy0811@customs.example.com shows up as
-# "codexdep", which is not a user that exists -- and an investigation that starts
+# A panel FTP account named webdeploy2024@example.com shows up as
+# "webdeplo", which is not a user that exists -- and an investigation that starts
 # by looking up a username that was never real wastes the time it takes to notice.
 { who; last -w -F -n 25; } 2>/dev/null | cap
 
