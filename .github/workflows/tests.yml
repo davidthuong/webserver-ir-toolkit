@@ -58,6 +58,12 @@ jobs:
           bash .github/scripts/run-and-annotate.sh "signatures / runner"
           sudo -E bash tools/test-signatures.sh -v
 
+      - name: baseline drift check
+        if: always()
+        run: >
+          bash .github/scripts/run-and-annotate.sh "baseline / runner"
+          sudo -E bash tools/test-baseline.sh
+
   distro:
     name: ${{ matrix.image }}
     runs-on: ubuntu-latest
@@ -108,3 +114,9 @@ jobs:
         run: >
           bash .github/scripts/run-and-annotate.sh "signatures / $IMAGE"
           docker exec lab bash /src/tools/test-signatures.sh -v
+
+      - name: baseline drift check
+        if: always()
+        run: >
+          bash .github/scripts/run-and-annotate.sh "baseline / $IMAGE"
+          docker exec lab bash /src/tools/test-baseline.sh

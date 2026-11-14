@@ -29,6 +29,7 @@ Documentation is maintained in English and Vietnamese with parity.
 | Anti-cleanup + client-side injection | 5/5 detected, 0/7 false positives | Samples recovered from a live compromise, including a repeating-key XOR loader |
 | Generic detection thresholds | separates cleanly | Measured: a malicious payload carried a 56,030-char base64 run against 1,467 for a legitimately embedded icon |
 | Joomla core integrity (`--checksums`) | 5/5 tampered files reported, 0 false reports on three untouched releases | Lab: untouched Joomla 3.10.12, 5.3.4 and 6.2.0 releases gave 0 modified / 0 added; a 6.2.0 site with a modified core PHP file, modified core JS, and PHP dropped into a core component directory, the site root and `libraries/vendor` had all five reported, while `configuration.php`, the runtime `autoload_psr4.php`, a third-party component and plugin, and page cache were not. A non-existent version was reported as not verified |
+| Baseline drift (`tools/baseline.sh`) | every change kind reported; churn and unchanged files not | `tools/test-baseline.sh`, in CI on six Linux environments: modified, new, removed and re-permissioned PHP, PHP two levels into a cache directory, `.htaccess`, a crontab, a unit enabled by a new symlink and a retargeted symlink are all reported in the priority group; a new image in the secondary group; non-PHP cache churn and unchanged files are not reported. On a real Virtualmin host an immediate compare was clean and a dropped PHP file was reported. The test caught a defect before release: exclusions matched the whole path, so a webroot under any directory called `tmp` lost every non-PHP file |
 | Read-only guarantee | PASS | Full 20-section run over a fixture tree; sha256, permissions and directory listing identical before and after |
 
 These rows are not the same claim. The two corpus rows are the only measurement against a large
@@ -105,9 +106,9 @@ stays out of scope, see non-goals.
 **Machine-readable output.** A `--json` mode so findings can feed a ticketing system or be
 diffed between runs. The report is currently for human reading only.
 
-**Baseline and drift tooling.** `PLAYBOOK.md` Phase 8 documents taking a hash baseline after
-remediation and comparing daily; it is prose, not a script. Baseline comparison is the only
-detection method that does not depend on recognising the malware, so it deserves to be a tool.
+**Off-host baselines.** `tools/baseline.sh` keeps its baseline on the host it watches, so an
+attacker with root can rewrite both. It prints the baseline's hash for the operator to keep
+elsewhere; shipping the baseline itself off-host, and comparing from there, would close that gap.
 
 **Bilingual glossary.** `containment` and `mitigation` are currently translated
 interchangeably in places. A term list would keep the two language trees from drifting as

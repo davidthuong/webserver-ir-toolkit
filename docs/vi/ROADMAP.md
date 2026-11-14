@@ -28,6 +28,7 @@ tương tự cho bộ pattern. Tài liệu duy trì song song tiếng Anh và ti
 | Chống dọn + inject client-side | 5/5 phát hiện, 0/7 báo nhầm | Mẫu lấy từ một vụ xâm nhập thật, gồm loader dùng XOR key lặp |
 | Ngưỡng phát hiện tổng quát | Phân biệt rõ | Đo thật: payload độc có chuỗi base64 **56.030** ký tự, icon nhúng hợp lệ **1.467** |
 | Toàn vẹn core Joomla (`--checksums`) | Báo đủ 5/5 file bị cài cắm, 0 báo sai trên ba bản phát hành nguyên vẹn | Lab: Joomla 3.10.12, 5.3.4 và 6.2.0 nguyên bản cho 0 sửa / 0 thêm; một site 6.2.0 có file PHP core bị sửa, JS core bị sửa, và PHP thả vào thư mục component của core, thư mục gốc và `libraries/vendor` bị báo đủ cả năm, trong khi `configuration.php`, `autoload_psr4.php` do Joomla tự sinh, một component và một plugin bên thứ ba, và cache trang không bị báo. Một phiên bản không tồn tại bị ghi là chưa kiểm |
+| Baseline drift (`tools/baseline.sh`) | báo đủ mọi loại thay đổi; không báo file rác trong cache hay file không đổi | `tools/test-baseline.sh`, chạy trong CI trên sáu môi trường Linux: PHP bị sửa, mới, bị xoá và đổi quyền, PHP nằm sâu hai cấp trong thư mục cache, `.htaccess`, một crontab, một unit được bật bằng symlink mới và một symlink bị đổi đích đều được báo ở nhóm ưu tiên; một ảnh mới ở nhóm thứ yếu; file không phải PHP thay đổi trong cache và file không đổi không bị báo. Trên một host Virtualmin thật, so sánh ngay sau khi lấy baseline cho kết quả sạch, và một file PHP thả vào được báo. Bài test bắt được một lỗi trước khi phát hành: quy tắc loại trừ khớp cả đường dẫn đầy đủ, nên webroot nằm dưới bất kỳ thư mục nào tên `tmp` mất hết file không phải PHP |
 | Đảm bảo chỉ đọc | PASS | Chạy trọn 20 section trên cây thử; sha256, quyền và danh sách file giống hệt trước/sau |
 
 Các dòng này **không** nói cùng một điều. Hai dòng bộ mẫu công khai là phép đo duy nhất trên một
@@ -103,9 +104,9 @@ nằm ngoài phạm vi — xem mục không làm.
 **Xuất định dạng máy đọc được.** Chế độ `--json` để đưa phát hiện vào hệ thống ticket hoặc so
 sánh giữa các lần chạy. Report hiện chỉ dành cho người đọc.
 
-**Công cụ baseline và drift.** `PLAYBOOK.md` Phase 8 mô tả việc lấy baseline hash sau khi dọn
-rồi so sánh hằng ngày — nhưng đó là văn xuôi, không phải script. So sánh baseline là **cách
-phát hiện duy nhất không phụ thuộc việc nhận ra mã độc**, nên xứng đáng thành công cụ.
+**Baseline ngoài máy.** `tools/baseline.sh` lưu baseline ngay trên máy nó theo dõi, nên kẻ có
+quyền root sửa được cả hai. Công cụ in ra hash của baseline để người vận hành giữ ở nơi khác; đưa
+chính baseline ra ngoài máy và so sánh từ đó sẽ đóng nốt khoảng hở này.
 
 **Bảng thuật ngữ song ngữ.** `containment` và `mitigation` hiện có chỗ đang dịch lẫn nhau. Một
 bảng thuật ngữ sẽ giữ hai nhánh ngôn ngữ không trôi xa nhau khi có người đóng góp.

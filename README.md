@@ -40,6 +40,7 @@ web server that never reads `.htaccess`. See [MITIGATION.md](docs/en/MITIGATION.
 | Document | Purpose |
 |---|---|
 | [webshell-triage.sh](webshell-triage.sh) | Read-only scanner, 20 sections |
+| [tools/baseline.sh](tools/baseline.sh) | Clean-time baseline and daily drift report, for after remediation |
 | [PLAYBOOK.md](docs/en/PLAYBOOK.md) | 8-phase response procedure, in order |
 | [MITIGATION.md](docs/en/MITIGATION.md) | Blocking PHP execution — the correct recipe per web server |
 | [HARDENING.md](docs/en/HARDENING.md) | Prevention, ranked by effect over effort |
