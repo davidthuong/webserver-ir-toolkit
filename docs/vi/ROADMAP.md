@@ -27,6 +27,7 @@ tương tự cho bộ pattern. Tài liệu duy trì song song tiếng Anh và ti
 | Bộ mẫu hồi quy cho signature | 22/22 phát hiện, 0/24 báo nhầm, 21/21 pattern có mẫu, 2/2 mẫu mục 7 được report nêu tên | `tools/test-signatures.sh`, commit kèm và chạy lại được: mỗi pattern một fixture tổng hợp, cộng các mẫu code sạch đối chứng — có một mẫu cho mỗi lỗi báo nhầm mà bộ code sạch làm lộ ra. Đã kiểm là nó **thất bại đúng lúc cần** — pattern hỏng cú pháp, pattern bị xoá, pattern quá tham, và report rỗng |
 | Chống dọn + inject client-side | 5/5 phát hiện, 0/7 báo nhầm | Mẫu lấy từ một vụ xâm nhập thật, gồm loader dùng XOR key lặp |
 | Ngưỡng phát hiện tổng quát | Phân biệt rõ | Đo thật: payload độc có chuỗi base64 **56.030** ký tự, icon nhúng hợp lệ **1.467** |
+| Toàn vẹn core Joomla (`--checksums`) | Báo đủ 5/5 file bị cài cắm, 0 báo sai trên ba bản phát hành nguyên vẹn | Lab: Joomla 3.10.12, 5.3.4 và 6.2.0 nguyên bản cho 0 sửa / 0 thêm; một site 6.2.0 có file PHP core bị sửa, JS core bị sửa, và PHP thả vào thư mục component của core, thư mục gốc và `libraries/vendor` bị báo đủ cả năm, trong khi `configuration.php`, `autoload_psr4.php` do Joomla tự sinh, một component và một plugin bên thứ ba, và cache trang không bị báo. Một phiên bản không tồn tại bị ghi là chưa kiểm |
 | Đảm bảo chỉ đọc | PASS | Chạy trọn 20 section trên cây thử; sha256, quyền và danh sách file giống hệt trước/sau |
 
 Các dòng này **không** nói cùng một điều. Hai dòng bộ mẫu công khai là phép đo duy nhất trên một
@@ -64,7 +65,7 @@ kiểm lại sau mỗi thay đổi.
 | ProFTPD | **Đã kiểm chứng thực tế** |
 | Imunify360 | **Đã kiểm chứng thực tế** trên bản có license. Agent 8.11 do cPanel cài kèm (bản miễn phí ImunifyAV) đã kiểm trong lab: CLI và định dạng config khác, và scanner giờ nói rõ nó gặp sản phẩm nào |
 | Apache | Đã kiểm trong lab với Apache 2.4 trên AlmaLinux 9 dưới Virtualmin, và với EasyApache của cPanel: nhận diện web server, `AllowOverride`, log theo site, và tên miền cho `--http` đọc từ các khối `<VirtualHost>`. Chưa chạy trên host Apache bị chiếm |
-| Plesk | Đã kiểm trong lab trên Plesk Obsidian 18.0.82 (image container của hãng, service khởi động tay, không có systemd): nhận diện panel, document root đọc từ database của panel, scheduled task, mô hình nginx đứng trước Apache và log theo từng site. Lần chạy đó tìm ra bốn lỗi, đều thuộc loại "section rỗng trông như sạch". Chưa chạy trên host Plesk bị chiếm |
+| Plesk | Đã kiểm trong lab trên Plesk Obsidian 18.0.82 (image container của hãng, service khởi động tay, không có systemd): nhận diện panel, document root đọc từ database của panel, scheduled task, mô hình nginx đứng trước Apache và log theo từng site. Lần chạy đó tìm ra bốn lỗi, đều thuộc loại "section rỗng trông như sạch". Đã kiểm lại sau các thay đổi dùng chung về log, FTP và `--http` bằng `tools/lab-check.sh`: 10/10. `--http` mới được kiểm tới mức đọc tên miền từ database của panel và tải đúng server; container không chạy được Apache của Plesk sau nginx khi không có systemd, nên phần so sánh nội dung được kiểm trên cPanel và CyberPanel thay vào đó. Chưa chạy trên host Plesk bị chiếm |
 | cPanel | Đã kiểm trong lab trên cPanel & WHM 138 (Ubuntu 24.04, cài thật, license trial, một account có subdomain và addon domain): nhận diện panel, document root đọc từ `/var/cpanel/userdata` kể cả addon domain nằm ngoài `public_html`, crontab theo user, đường dẫn EasyApache và `AllowOverride`, PHP binary, log đăng nhập, và các file `.gz` theo tháng mà cPanel dồn access log vào. Mẫu thử là tổng hợp; chưa chạy trên host cPanel bị chiếm |
 | nginx | Theo tài liệu |
 | LiteSpeed Enterprise | Theo tài liệu — phân biệt edition rất quan trọng, và script **từ chối đoán** |
@@ -90,11 +91,10 @@ ra sao trước một kẻ tấn công đang cố vượt qua chúng.
 
 Xếp theo mức giảm rủi ro report bị sai trong im lặng.
 
-**Kiểm toàn vẹn cho Joomla.** WordPress có `wp core verify-checksums` và
-`wp plugin verify-checksums` — đó là check duy nhất tìm được họ mã độc chưa ai mô tả. Joomla
-không có tương đương, và hướng dẫn hiện tại (diff với bản giải nén sạch cùng version) là quy
-trình thủ công chứ không phải một check. Trong vụ sinh ra bộ công cụ này, **Joomla chiếm đa số
-site bị chiếm**.
+**Toàn vẹn extension Joomla.** `--checksums` giờ đã đối chiếu core Joomla với bản phát hành chính
+thức. Extension bên thứ ba thì chưa: không có nguồn tập trung cho các bản phát hành của chúng, mà
+trong vụ sự cố, phần lớn backdoor và đường vào lại nằm ở đó. Bước tiếp theo là đối chiếu extension
+đã cài với gói phát hành của chính nó, khi tìm được gói đó.
 
 **Kiểm kê CMS và extension.** Xuất danh sách version trên mọi account của một host là việc máy
 móc, và là đầu vào cho mọi câu hỏi "cái này có dính lỗ hổng không". Bản thân dữ liệu lỗ hổng
