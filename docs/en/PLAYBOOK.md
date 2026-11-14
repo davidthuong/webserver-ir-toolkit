@@ -292,25 +292,39 @@ ModSecurity with a real ruleset, firewall plus fail2ban, and 2FA on the panel.
 
 ## Phase 8 — Watch for reinfection
 
-Take a baseline once clean, then compare daily for two to four weeks.
+Take a baseline once the host is believed clean, then compare daily for two to four weeks.
+Baseline comparison is the one detection method that does not depend on recognising the malware:
+anything new, modified, removed or re-permissioned is reported, whatever it contains.
 
 ```bash
-find /home/*/domains/*/public_html -type f \( -name '*.php' -o -name '.htaccess' \) \
-  -exec sha256sum {} \; | sort > /root/baseline.sha256
+cd /root/webserver-ir-toolkit
+bash webshell-triage.sh --days 60          # a fresh report, after remediation
+bash tools/baseline.sh take                # webroots are read from that report
+# note the sha256 it prints somewhere off this host
 
-cat > /root/check-drift.sh <<'EOF'
-#!/bin/bash
-find /home/*/domains/*/public_html -type f \( -name '*.php' -o -name '.htaccess' \) \
-  -exec sha256sum {} \; | sort > /tmp/now.sha256
-diff /root/baseline.sha256 /tmp/now.sha256 > /tmp/drift.txt
-[ -s /tmp/drift.txt ] && mail -s "FILE DRIFT on $(hostname)" you@example.com < /tmp/drift.txt
-EOF
-chmod +x /root/check-drift.sh
-(crontab -l 2>/dev/null; echo '0 3 * * * /root/check-drift.sh') | crontab -
+bash tools/baseline.sh compare             # exit 0 no change, 1 changes, 2 could not compare
+```
+
+Daily, mailed only when something changed. Cron mails any output, and `--quiet` prints nothing
+on a clean day:
+
+```bash
+(crontab -l 2>/dev/null; echo '0 3 * * * bash /root/webserver-ir-toolkit/tools/baseline.sh compare --quiet') | crontab -
 ```
 
 > Note the `crontab -l` prefix — `echo ... | crontab -` on its own **replaces** the existing
 > crontab rather than adding to it.
+
+Besides the webroots it watches the places a backdoor comes back from: crontabs (system,
+per-user, DirectAdmin), systemd units — including the symlinks that enable them —
+`/etc/ld.so.preload`, sudoers, `profile.d`, `rc.local`, `passwd`/`group` and SSH
+`authorized_keys`. Changes to PHP, `.htaccess`/`.user.ini` and those persistence points are listed
+first; other webroot changes (uploaded images and the like) after. Under directories named
+`cache`, `tmp`, `logs` or `sessions` only PHP files are tracked, because those directories churn.
+
+The baseline lives in `/root/ir-baseline` (mode 700). An attacker with root can rewrite it, which
+is why `take` prints its hash: keep that off the host and compare it if a quiet result ever looks
+too quiet. After a deliberate change — a plugin update, a deploy — run `take` again.
 
 Re-run `webshell-triage.sh` at 48 hours and at one week. If shells come back, the entry point
 found in Phase 4 was not the real one.

@@ -217,24 +217,39 @@ công thức đúng cho web server thật của mình, xem [MITIGATION.md](MITIG
 
 ## Phase 8 — Theo dõi tái nhiễm
 
-Đặt baseline rồi so sánh hằng ngày trong 2–4 tuần:
+Lấy baseline khi máy đã được coi là sạch, rồi so sánh hằng ngày trong 2–4 tuần. So sánh baseline
+là cách phát hiện duy nhất **không phụ thuộc việc nhận ra mã độc**: mọi thứ mới, bị sửa, bị xoá hay
+bị đổi quyền đều được báo, bất kể nội dung là gì.
 
 ```bash
-# tạo baseline sau khi đã dọn sạch
-find /home/*/domains/*/public_html -type f \( -name '*.php' -o -name '.htaccess' \) \
-  -exec sha256sum {} \; | sort > /root/baseline.sha256
+cd /root/webserver-ir-toolkit
+bash webshell-triage.sh --days 60          # report mới, sau khi đã dọn
+bash tools/baseline.sh take                # webroot đọc từ chính report đó
+# ghi lại mã sha256 nó in ra ở một nơi ngoài máy này
 
-# cron hằng ngày: báo file mới/đổi
-cat > /root/check-drift.sh <<'EOF'
-#!/bin/bash
-find /home/*/domains/*/public_html -type f \( -name '*.php' -o -name '.htaccess' \) \
-  -exec sha256sum {} \; | sort > /tmp/now.sha256
-diff /root/baseline.sha256 /tmp/now.sha256 > /tmp/drift.txt
-[ -s /tmp/drift.txt ] && mail -s "FILE DRIFT on $(hostname)" you@example.com < /tmp/drift.txt
-EOF
-chmod +x /root/check-drift.sh
-echo '0 3 * * * /root/check-drift.sh' | crontab -
+bash tools/baseline.sh compare             # exit 0 không đổi, 1 có thay đổi, 2 không so được
 ```
+
+Chạy hằng ngày, chỉ gửi mail khi có thay đổi. Cron tự gửi mọi output, còn `--quiet` không in gì
+vào ngày sạch:
+
+```bash
+(crontab -l 2>/dev/null; echo '0 3 * * * bash /root/webserver-ir-toolkit/tools/baseline.sh compare --quiet') | crontab -
+```
+
+> Chú ý tiền tố `crontab -l` — chỉ `echo ... | crontab -` thôi sẽ **ghi đè** toàn bộ crontab
+> hiện có thay vì thêm vào. Bản trước của mục này mắc đúng lỗi đó.
+
+Ngoài webroot, công cụ còn theo dõi những chỗ backdoor hay quay lại: crontab (hệ thống, theo
+user, DirectAdmin), unit systemd — kể cả symlink dùng để bật chúng — `/etc/ld.so.preload`,
+sudoers, `profile.d`, `rc.local`, `passwd`/`group` và `authorized_keys` của SSH. Thay đổi ở file
+PHP, `.htaccess`/`.user.ini` và các điểm persistence đó được liệt kê trước; thay đổi khác trong
+webroot (ảnh upload và tương tự) liệt kê sau. Trong thư mục tên `cache`, `tmp`, `logs` hay
+`sessions` chỉ file PHP được theo dõi, vì các thư mục đó thay đổi liên tục.
+
+Baseline nằm ở `/root/ir-baseline` (quyền 700). Kẻ có quyền root sửa được nó, nên `take` in ra mã
+hash của baseline: giữ mã đó ngoài máy và đối chiếu nếu kết quả "không thay đổi" có vẻ đáng ngờ.
+Sau một thay đổi có chủ ý — cập nhật plugin, deploy — chạy lại `take`.
 
 Chạy lại `webshell-triage.sh` sau 48h và sau 1 tuần. Nếu shell quay lại → entry point ở
 Phase 4 chưa đúng.

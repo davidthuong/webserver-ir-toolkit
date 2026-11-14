@@ -38,6 +38,7 @@ bao giờ đọc `.htaccess`. Xem [MITIGATION.md](MITIGATION.md).
 | Tài liệu | Dùng để làm gì |
 |---|---|
 | [webshell-triage.sh](../../webshell-triage.sh) | Scanner chỉ đọc, 20 section |
+| [tools/baseline.sh](../../tools/baseline.sh) | Baseline lúc sạch và báo thay đổi hằng ngày, dùng sau khi dọn |
 | [PLAYBOOK.md](PLAYBOOK.md) | Quy trình 8 phase, đúng thứ tự |
 | [MITIGATION.md](MITIGATION.md) | Chặn thực thi PHP — công thức đúng cho từng web server |
 | [HARDENING.md](HARDENING.md) | Phòng ngừa, xếp theo hiệu quả trên công sức |
