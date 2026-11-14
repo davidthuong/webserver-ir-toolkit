@@ -188,6 +188,11 @@ nó test cả hai chiều cộng thêm một thứ mà không chiều nào phủ
 file report** hay không. Bộ pattern báo nhầm code hợp lệ sẽ bị bỏ qua, và một scanner bị bỏ qua
 thì tệ hơn là không có.
 
+Muốn kiểm scanner trên control panel thật thay vì cây thư mục tổng hợp, dùng `tools/lab-check.sh`
+trên **máy lab**: nó cắm mẫu thử vô hại vào một site, quét toàn máy và kiểm report có tìm thấy
+từng mẫu không. Script này **có ghi vào webroot**, nên tuyệt đối không chạy trên máy đang điều
+tra. Xem [CONTRIBUTING.md](../../CONTRIBUTING.md).
+
 ---
 
 ## Giới hạn, nói thẳng

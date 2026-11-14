@@ -193,6 +193,11 @@ the code, and it tests both directions plus one thing neither direction covers: 
 findings reach the **report file**. A pattern set that flags legitimate code gets ignored, and
 an ignored scanner is worse than none.
 
+To check the scanner on a real control panel rather than a synthetic tree, use
+`tools/lab-check.sh` on a **lab host** — it plants inert fixtures in one site, scans the whole
+host and checks the report found each one. It writes to a webroot, so never run it on a host
+you are investigating. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ---
 
 ## Limitations, stated plainly

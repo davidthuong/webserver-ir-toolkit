@@ -90,6 +90,22 @@ working shell. Never commit real malware.
 State the results in the PR: how many shell forms detected, how many clean samples flagged.
 A pattern that adds one detection and two false positives is a regression.
 
+**Changes that touch panel paths need a real panel.** CI runs on a synthetic tree, so it
+cannot see a document root the scanner never finds, a log it never opens or a domain it never
+fetches — and every such defect leaves a section empty, which reads as clean. If you change
+how the scanner finds roots, logs, crontabs, FTP or domains, run this on a lab host with that
+panel installed and at least one site:
+
+```bash
+bash tools/lab-check.sh --lab --root <site document root> --domain <site> --log <its access log>
+```
+
+It plants inert fixtures in that site (each PHP file starts with `exit;`; the cron line is
+scheduled for 31 February), runs the scanner over the whole host, checks the report names each
+one in the section that should catch it, and removes what it planted. **It writes to a
+webroot: lab hosts only, never a host under investigation.** State in the PR which panel and
+version it passed on.
+
 **Portability.** Target `bash` 4.2 and GNU coreutils as shipped on RHEL 7 — that is the oldest
 system people are still running this on. No `bash` 5 syntax, no `grep -P`, no GNU-only flags
 that BusyBox lacks if you can avoid them.
