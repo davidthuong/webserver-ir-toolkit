@@ -190,9 +190,8 @@ else
   # cPanel keeps one file per domain under /var/cpanel/userdata/<user>/, each
   # naming its document root. An addon domain's root may sit beside public_html
   # rather than inside it, where the /home/*/public_html pattern cannot see it.
-  # NOT exercised against real accounts: the lab host had no licence to create
-  # one, so this follows cPanel's documented file format. It only ever adds
-  # directories that exist, so the worst a wrong guess does is add nothing.
+  # Checked on cPanel 138 with an addon domain created at /home/<user>/addon2.test.
+  # It only ever adds directories that exist.
   if [ -d /var/cpanel/userdata ]; then
     while IFS= read -r d; do
       case "$d" in /*) add_root "$d" ;; esac
@@ -764,6 +763,7 @@ find /home /var/qmail/mailnames /var/qmail/control -maxdepth 4 -name '.forward' 
 # -----------------------------------------------------------------------------
 sec "14. ENTRY-POINT HINTS FROM ACCESS LOGS"
 LOGS=()
+SEENLOGS=""
 for g in /var/log/httpd/domains/*.log \
          /var/log/apache2/*access*log /var/log/apache2/domlogs/* \
          /var/log/nginx/*access*log \
@@ -772,42 +772,73 @@ for g in /var/log/httpd/domains/*.log \
          /usr/local/lsws/logs/*access*log /usr/local/lsws/logs/*/*access*log \
          /home/*/logs/*access*log /home/*/logs/*/*access*log \
          /var/log/virtualmin/*access_log; do
-  [ -f "$g" ] && LOGS+=("$g")
+  [ -f "$g" ] || continue
+  # cPanel keeps byte counters and FTP transfer offsets beside the access logs.
+  case "$g" in *-bytes_log|*ftpxferlog*) continue ;; esac
+  # The same directory is often reachable by several of the paths above -- on
+  # cPanel all three domlogs paths are one directory behind symlinks -- and a
+  # log read three times prints every request three times.
+  rp=$(readlink -f "$g" 2>/dev/null); rp=${rp:-$g}
+  case "$SEENLOGS" in *"|$rp|"*) continue ;; esac
+  SEENLOGS="$SEENLOGS|$rp|"
+  LOGS+=("$g")
 done
-log "access logs found: ${#LOGS[@]}"
-if [ "${#LOGS[@]}" -eq 0 ]; then
+# Compressed history. cPanel's log processor empties the live domlog and files
+# the requests away as /home/<user>/logs/<domain>-<Mon>-<Year>.gz -- observed
+# within a minute of the request on cPanel 138 -- so on that panel the live logs
+# hold almost nothing and the evidence is all in the archives. Rotated nginx
+# and Apache logs are the same story one logrotate cycle later.
+ZLOGS=()
+for g in /home/*/logs/*.gz /var/log/nginx/*access*log*.gz \
+         /var/log/apache2/*access*log*.gz /var/log/httpd/*access*log*.gz; do
+  [ -f "$g" ] || continue
+  case "$g" in *.tar.gz|*-bytes_log*) continue ;; esac
+  ZLOGS+=("$g")
+done
+# One grep over all plain logs and one zgrep over all archives: two processes
+# per question, however many logs there are.
+lgrep() {
+  [ "${#LOGS[@]}" -gt 0 ] && grep "$@" "${LOGS[@]}" 2>/dev/null
+  [ "${#ZLOGS[@]}" -gt 0 ] && have zgrep && zgrep "$@" "${ZLOGS[@]}" 2>/dev/null
+  return 0
+}
+NLOGS=$(( ${#LOGS[@]} + ${#ZLOGS[@]} ))
+log "access logs found: ${#LOGS[@]} live, ${#ZLOGS[@]} compressed"
+[ "${#ZLOGS[@]}" -gt 0 ] && ! have zgrep && \
+  log "!! zgrep is not installed -- the compressed logs were NOT searched"
+if [ "$NLOGS" -eq 0 ]; then
   log "!! none found -- locate them manually, then re-run with the path:"
   log "     ss -ltnp | grep -E ':(80|443)'   then check that server's config"
   log "   LiteSpeed/OpenLiteSpeed default: /usr/local/lsws/logs/"
   log "   CyberPanel: /home/<domain>/logs/    Virtualmin: /var/log/virtualmin/"
 fi
-if [ "${#LOGS[@]}" -gt 0 ]; then
+if [ "$NLOGS" -gt 0 ]; then
   sub "POST requests to PHP inside upload/cache dirs (shell being driven)"
-  grep -hE '"POST [^"]*(upload|uploads|images|cache|tmp|assets|media)/[^"]*\.php' "${LOGS[@]}" 2>/dev/null \
+  lgrep -hE '"POST [^"]*(upload|uploads|images|cache|tmp|assets|media)/[^"]*\.php' \
     | tail -60 | cap
   sub "requests to any file flagged in section 6"
   if [ -s "$CAND" ]; then
     while IFS= read -r f; do
       b=$(basename "$f")
       case "$b" in *.php|*.phtml|*.phar) ;; *) continue ;; esac
-      hits=$(grep -hF "/$b" "${LOGS[@]}" 2>/dev/null | tail -5)
+      hits=$(lgrep -hF "/$b" | tail -5)
       [ -n "$hits" ] && { log ">>> $b"; printf '%s\n' "$hits" | cut -c1-220 | tee -a "$OUT"; }
     done < <(head -40 "$CAND")
   fi
   sub "common exploit probes (LFI/RCE/upload)"
-  grep -hoiE '(\.\./\.\./|/wp-content/plugins/[a-z0-9_-]+/[^ "]*\.php\?|xmlrpc\.php|/wp-json/wp/v2/users|eval\(|base64_|union[+ ]select|/vendor/phpunit|think\\\\app|/cgi-bin/)' \
-    "${LOGS[@]}" 2>/dev/null | sort | uniq -c | sort -rn | head -25 | cap
+  lgrep -hoiE '(\.\./\.\./|/wp-content/plugins/[a-z0-9_-]+/[^ "]*\.php\?|xmlrpc\.php|/wp-json/wp/v2/users|eval\(|base64_|union[+ ]select|/vendor/phpunit|think\\\\app|/cgi-bin/)' \
+    | sort | uniq -c | sort -rn | head -25 | cap
 
   sub "CMS component/plugin task endpoints in the query string"
   # Joomla and WordPress route exploits through option=/task=/action= parameters.
   # Anything here with a 500 usually means the component EXISTS and is reachable
   # -- a 404 means it is not installed on that vhost.
-  grep -hoiE 'option=com_[a-z0-9_]+&[a-z]*task=[a-z0-9_.]+|action=[a-z0-9_]*upload[a-z0-9_]*' \
-    "${LOGS[@]}" 2>/dev/null | sort | uniq -c | sort -rn | head -25 | cap
+  lgrep -hoiE 'option=com_[a-z0-9_]+&[a-z]*task=[a-z0-9_.]+|action=[a-z0-9_]*upload[a-z0-9_]*' \
+    | sort | uniq -c | sort -rn | head -25 | cap
 
   sub "status codes returned to those endpoint probes"
-  grep -hoiE '"(GET|POST) [^"]*(option=com_[a-z0-9_]+|task=[a-z0-9_.]*upload[a-z0-9_.]*)[^"]*" [0-9]{3}' \
-    "${LOGS[@]}" 2>/dev/null | grep -oE '[0-9]{3}$' | sort | uniq -c | sort -rn | head | cap
+  lgrep -hoiE '"(GET|POST) [^"]*(option=com_[a-z0-9_]+|task=[a-z0-9_.]*upload[a-z0-9_.]*)[^"]*" [0-9]{3}' \
+    | grep -oE '[0-9]{3}$' | sort | uniq -c | sort -rn | head | cap
 
   log ""
   log "  !! IMPORTANT -- a quiet result here does NOT mean no exploitation."
@@ -1183,6 +1214,7 @@ if [ "${NART:-0}" -gt 0 ]; then
   sed -E -e 's|.*/home/([^/]+)/domains/.*|\1|' \
          -e 's|.*/home/([^/]+)/public_html.*|\1|' \
          -e 's|^/var/www/vhosts/([^/]+)/.*|\1|' \
+         -e 's|^/home/([^/]+)/.*|\1|' \
          -e 's|^/([^/]+)/.*|/\1|' "$ALL" \
     | sort | uniq -c | sort -rn \
     | awk '{printf "  %-5s %s\n", $1, $2}' | cap

@@ -56,7 +56,7 @@ kiểm lại sau mỗi thay đổi.
 | Imunify360 | **Đã kiểm chứng thực tế** trên bản có license. Agent 8.11 do cPanel cài kèm (bản miễn phí ImunifyAV) đã kiểm trong lab: CLI và định dạng config khác, và scanner giờ nói rõ nó gặp sản phẩm nào |
 | Apache | Một phần — đã xử lý đường dẫn và `AllowOverride`, chưa chạy trên host Apache bị chiếm |
 | Plesk | Đã kiểm trong lab trên Plesk Obsidian 18.0.82 (image container của hãng, service khởi động tay, không có systemd): nhận diện panel, document root đọc từ database của panel, scheduled task, mô hình nginx đứng trước Apache và log theo từng site. Lần chạy đó tìm ra bốn lỗi, đều thuộc loại "section rỗng trông như sạch". Chưa chạy trên host Plesk bị chiếm |
-| cPanel | Đã kiểm trong lab trên cPanel & WHM 138 (Ubuntu 24.04, cài thật, **không có license nên không có account**): nhận diện panel, đường dẫn EasyApache và `AllowOverride`, PHP binary, log exim và log đăng nhập. Document root của account đọc từ `/var/cpanel/userdata` theo định dạng trong tài liệu, chưa gặp account thật |
+| cPanel | Đã kiểm trong lab trên cPanel & WHM 138 (Ubuntu 24.04, cài thật, license trial, một account có subdomain và addon domain): nhận diện panel, document root đọc từ `/var/cpanel/userdata` kể cả addon domain nằm ngoài `public_html`, crontab theo user, đường dẫn EasyApache và `AllowOverride`, PHP binary, log đăng nhập, và các file `.gz` theo tháng mà cPanel dồn access log vào. Mẫu thử là tổng hợp; chưa chạy trên host cPanel bị chiếm |
 | nginx | Theo tài liệu |
 | LiteSpeed Enterprise | Theo tài liệu — phân biệt edition rất quan trọng, và script **từ chối đoán** |
 | CyberPanel, Virtualmin | Chỉ mới có đường dẫn log |
