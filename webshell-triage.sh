@@ -187,6 +187,18 @@ else
   for d in /var/www/vhosts/*/httpdocs /var/www/vhosts/*/*/httpdocs /var/www/vhosts/*/subdomains/*; do
     add_root "$d"
   done
+  # cPanel keeps one file per domain under /var/cpanel/userdata/<user>/, each
+  # naming its document root. An addon domain's root may sit beside public_html
+  # rather than inside it, where the /home/*/public_html pattern cannot see it.
+  # NOT exercised against real accounts: the lab host had no licence to create
+  # one, so this follows cPanel's documented file format. It only ever adds
+  # directories that exist, so the worst a wrong guess does is add nothing.
+  if [ -d /var/cpanel/userdata ]; then
+    while IFS= read -r d; do
+      case "$d" in /*) add_root "$d" ;; esac
+    done < <(grep -rhs '^documentroot:' /var/cpanel/userdata/ 2>/dev/null \
+               | sed 's/^documentroot:[[:space:]]*//' | sort -u)
+  fi
   # Plesk records every document root, and that record is the only complete
   # list: a subdomain or additional domain gets a directory named by whoever
   # created it (observed on Plesk 18: <subscription>/site1), which no glob can
@@ -349,6 +361,7 @@ case "$HTACCESS" in
     log "  if it does not, Apache returns 500 for the whole directory."
     sub "AllowOverride in effect"
     grep -rhs 'AllowOverride' /etc/httpd/conf/httpd.conf /etc/apache2/apache2.conf \
+      /etc/apache2/conf/httpd.conf \
       /usr/local/directadmin/data/users/*/httpd.conf /etc/httpd/conf.d/ \
       /etc/apache2/plesk.conf.d/server.conf /var/www/vhosts/system/*/conf/httpd.conf 2>/dev/null \
       | sort -u | head -10 | cap
@@ -365,7 +378,16 @@ for p in /usr/local/lsws/lsphp*/bin/php /opt/plesk/php/*/bin/php \
          /opt/alt/php*/usr/bin/php /usr/bin/php /usr/local/bin/php; do
   [ -x "$p" ] || continue
   phpfound=$((phpfound+1))
-  ver=$("$p" -r 'echo PHP_VERSION;' 2>/dev/null || echo '?')
+  # Not every "php" is the CLI. On cPanel /usr/bin/php is a wrapper around
+  # php-cgi, which has no -r: it prints its whole usage screen and exits 0, and
+  # that screen went into the report as the version. Accept only something
+  # shaped like a version, and fall back to the banner line of -v.
+  ver=$("$p" -r 'echo PHP_VERSION;' 2>/dev/null | head -n 1)
+  case "$ver" in
+    [0-9]*.[0-9]*) ;;
+    *) ver=$("$p" -v 2>/dev/null | sed -n '1s/^PHP \([0-9][0-9.]*\).*/\1/p') ;;
+  esac
+  ver=${ver:-?}
   ext=$("$p" -m 2>/dev/null | grep -iE 'imunify|snuffleupagus|suhosin' | tr '\n' ',' )
   if [ -n "$ext" ]; then
     log "  OK      $p  (php $ver)  ext: ${ext%,}"
@@ -505,21 +527,56 @@ if have imunify360-agent; then
   log "imunify360 installed"
   log "version:  $(imunify360-agent version 2>&1 | head -3)"
   sub "license"
-  imunify360-agent register --status 2>&1 | head -10 | cap
+  # `register --status` does not exist on agent 8.x; rstatus does, and its JSON
+  # form says which product this actually is. That matters more than it sounds:
+  # cPanel ships the free ImunifyAV under this same binary name.
+  imunify360-agent rstatus 2>&1 | head -3 | cap
+  IMLIC=$(imunify360-agent rstatus --json 2>/dev/null \
+          | grep -oE '"(license_type|id|expiration)": *[^,}]*' | sort -u)
+  [ -n "$IMLIC" ] && printf '%s\n' "$IMLIC" | sed 's/^/  /' | cap
+  case "$IMLIC" in
+    *[iI]munifyAV*)
+      log "  !! This is ImunifyAV, not Imunify360. The free edition scans and reports;"
+      log "  !! it has no Proactive Defense, no WAF and no automatic cleanup. A host"
+      log "  !! that \"has Imunify\" in this form was never being protected in real time."
+      ;;
+  esac
   sub "malicious files Imunify already knows about"
   imunify360-agent malware malicious list --limit 100 2>&1 | head -60 | cap
   sub "on-demand scan history"
   imunify360-agent malware on-demand list 2>&1 | head -20 | cap
   sub "KEY SETTINGS -- these decide whether it actually blocks anything"
-  imunify360-agent config show 2>/dev/null \
-    | grep -iE -A4 'PROACTIVE_DEFENSE|MALWARE_SCANNING|WEBSHIELD|enable_scan_inotify|mode|try_restore' \
-    | head -60 | cap
+  # Agent 8.x prints the whole configuration as ONE line of JSON, so a line-based
+  # grep with context returned all of it. Pull the settings out by name instead;
+  # older agents print multi-line YAML and keep the original treatment.
+  # The key is spelled PROACTIVE_DEFENCE. Matching DEFENSE finds nothing.
+  IMCFG=$(imunify360-agent config show 2>/dev/null)
+  case "$IMCFG" in
+    "{"*)
+      printf '%s\n' "$IMCFG" \
+        | grep -oE '"(PROACTIVE_DEFENCE|WEBSHIELD|MALWARE_CLEANUP)": *\{[^}]*\}|"(enable_scan_inotify|default_action|ruleset)": *[^,}]*' \
+        | sed 's/^/  /' | cap
+      ;;
+    *)
+      printf '%s\n' "$IMCFG" \
+        | grep -iE -A4 'PROACTIVE_DEFEN[CS]E|MALWARE_SCANNING|WEBSHIELD|enable_scan_inotify|mode|try_restore' \
+        | head -60 | cap
+      ;;
+  esac
   log ""
-  log "  -> PROACTIVE_DEFENSE mode must be 'kill', not 'log' or 'disabled'"
+  log "  -> PROACTIVE_DEFENCE mode must be 'KILL', not 'LOG' or 'DISABLED'"
+  log "     (no \"mode\" shown at all means the feature is not in this licence)"
   log "  -> MALWARE_SCANNING enable_scan_inotify must be true (real-time on upload)"
   log "  -> WEBSHIELD enable must be true"
   sub "agent health"
-  imunify360-agent doctor 2>&1 | tail -15 | cap
+  # Deliberately NOT `imunify360-agent doctor`: it collects a diagnostic bundle
+  # and uploads it to the vendor, then prints a key to quote to support. A
+  # read-only triage tool has no business sending host data anywhere, least of
+  # all mid-incident. Service state answers the question this section asks.
+  for u in imunify360 imunify360-agent imunify-antivirus imunify360-webshield; do
+    s=$(systemctl is-active "$u" 2>/dev/null) || true
+    [ -n "${s:-}" ] && [ "$s" != "unknown" ] && log "  $u = $s"
+  done
 else
   log "imunify360-agent NOT found in PATH"
 fi
@@ -763,6 +820,7 @@ fi
 sub "panel + FTP + SSH login activity"
 grep -hiE 'fail|invalid|error' /var/log/directadmin/*.log 2>/dev/null | tail -20 | cap
 grep -hiE 'authentication|login' /var/log/plesk/panel.log 2>/dev/null | tail -20 | cap
+grep -hE 'FAILED LOGIN' /usr/local/cpanel/logs/login_log 2>/dev/null | tail -20 | cap
 grep -hE 'Accepted (password|publickey)' /var/log/secure /var/log/auth.log 2>/dev/null | tail -25 | cap
 # Match both FTP daemons. pure-ftpd writes "OK LOGIN", proftpd writes
 # "Login successful", and they log to different files -- so a check written for

@@ -55,10 +55,10 @@ re-checked on each change.
 | DirectAdmin | **Verified in the field** |
 | OpenLiteSpeed | **Verified in the field** — including that `.htaccess` is silently ignored |
 | ProFTPD | **Verified in the field** |
-| Imunify360 | **Verified in the field** |
+| Imunify360 | **Verified in the field** on the licensed product. Agent 8.11 as bundled by cPanel (the free ImunifyAV tier) lab-checked: its CLI and config output differ, and the scanner now says which product it found |
 | Apache | Partially — paths and `AllowOverride` handling implemented, not run on a compromised Apache host |
 | Plesk | Lab-checked on Plesk Obsidian 18.0.82 (vendor container image, services started by hand, no systemd): panel detection, document roots read from the panel database, scheduled tasks, the nginx-in-front-of-Apache stack and per-site logs. That run found four defects, all of the "empty section reads as clean" kind. Not run on a compromised Plesk host |
-| cPanel | From documentation |
+| cPanel | Lab-checked on cPanel & WHM 138 (Ubuntu 24.04, real install, **no licence, so no accounts**): panel detection, EasyApache paths and `AllowOverride`, PHP binaries, exim and login logs. Account document roots are read from `/var/cpanel/userdata`, which follows the documented format and has not met a real account |
 | nginx | From documentation |
 | LiteSpeed Enterprise | From documentation — the edition split matters and the script refuses to guess it |
 | CyberPanel, Virtualmin | Log paths only |
