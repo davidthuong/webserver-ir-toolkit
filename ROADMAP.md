@@ -15,51 +15,82 @@ ship; only one has been proven.
 
 The scanner runs 20 sections and is read-only by construction, which
 [tools/verify-readonly.sh](tools/verify-readonly.sh) demonstrates rather than asserts.
+[tools/test-signatures.sh](tools/test-signatures.sh) does the same for the pattern set.
 Documentation is maintained in English and Vietnamese with parity.
 
 ### Detection, and how it was measured
 
 | Layer | Result | Method |
 |---|---|---|
-| Webshell signatures | 16/16 detected, 0/12 false positives | 16 real shell forms against 12 clean-code controls chosen to be the constructs naive patterns trip on |
+| Public malware corpus | **483/710 (68%)** detected by the content-based sections; signatures alone 373/710 (53%) | 710 unique PHP samples from four public collections — JohnTroony/php-webshells 52/65, bartblaze/PHP-backdoors (collected from compromised sites) 110/177, nikicat/web-malware-collection 120/161, tennc/webshell `php/` 201/307. Files containing PHP code, deduplicated by sha256, scanned with `--root` in batches of 80 so no section cap hid a result. Only sections 6, 7, 16 and 17 count; sections that list files for other reasons do not. Before this round: 455/710 |
+| Public clean corpus | **0 signature false positives** in ~33,700 PHP files; 90, 47 and 39 files named by heuristic sections 7, 16 and 17 for review (about 0.5%) | WordPress core with 12 popular plugins (WooCommerce, Elementor, Jetpack, Wordfence, Yoast, UpdraftPlus, WP File Manager and others), Joomla 6.2, Drupal 11.4, scanned in their real layout. Before this round the signatures flagged 8 of these files |
+| Webshell signatures, field | 16/16 detected, 0/12 false positives | 16 real shell forms against 12 clean-code controls chosen to be the constructs naive patterns trip on. A one-off measurement against live samples, not reproducible from this repository |
+| Signature regression corpus | 22/22 detected, 0/24 false positives, 21/21 patterns exercised, 2/2 section 7 fixtures reported | `tools/test-signatures.sh`, checked in and repeatable: one synthetic fixture per pattern, plus clean controls — including one for each false positive the clean corpus exposed. Verified to fail on a broken pattern, a deleted pattern, a greedy pattern and an empty report |
 | Anti-cleanup + client-side injection | 5/5 detected, 0/7 false positives | Samples recovered from a live compromise, including a repeating-key XOR loader |
 | Generic detection thresholds | separates cleanly | Measured: a malicious payload carried a 56,030-char base64 run against 1,467 for a legitimately embedded icon |
 | Read-only guarantee | PASS | Full 20-section run over a fixture tree; sha256, permissions and directory listing identical before and after |
+
+These rows are not the same claim. The two corpus rows are the only measurement against a large
+body of real malware and real clean code, and they are the honest headline: roughly a third of
+public webshells pass every content check. Of the 255 the earlier set missed, 61 contained no
+request input and no eval- or exec-like call at all — includes, fragments and configs from the
+collections rather than shells — so the miss rate on actual shells is lower than the raw figure,
+but not by enough to call the signatures sufficient. That is the reason the toolkit also leans on
+package verification (`--checksums`) and on a clean-time baseline, neither of which needs to
+recognise the malware. The field row is what one real incident's malware did once; the regression
+row is what anyone can re-run after changing a pattern. The corpora are not in this repository,
+which does not carry malware; the sources and method above are enough to rebuild them.
+
+Both self-checks run in [CI](.github/workflows/tests.yml) on every push and pull request: on
+an Ubuntu runner as root, and inside CentOS 7, AlmaLinux 8 and 9, Debian 12 and Ubuntu 24.04
+containers. That is where the end-to-end layer of the signature test — the one that runs the
+scanner and reads the report back — first met `webshell-triage.sh` itself rather than a stub
+that fabricates a report. On all six the scanner completed its 20 sections and the report
+named every fixture.
+
+What a green run does not cover, stated in the spirit of the rest of this document: anything
+shaped like a control panel. No runner has DirectAdmin, Plesk or cPanel installed, so CI
+exercises the scanner on that OS, bash and grep against a synthetic webroot, and says nothing
+about panel detection, per-user crontabs or panel log paths. The table below is unchanged by
+it. The field verification behind that table came from one production host the maintainers no
+longer have access to, so those rows are a record of what was observed, not something that is
+re-checked on each change.
 
 ### Platform coverage
 
 | Stack | Status |
 |---|---|
-| CentOS 7 / RHEL family | **Verified in the field** |
+| CentOS 7 / RHEL family | **Verified in the field** on CentOS 7; AlmaLinux 9.7 lab host (Virtualmin); AlmaLinux 8 in CI only |
 | DirectAdmin | **Verified in the field** |
 | OpenLiteSpeed | **Verified in the field** — including that `.htaccess` is silently ignored |
 | ProFTPD | **Verified in the field** |
-| Imunify360 | **Verified in the field** |
-| Apache | Partially — paths and `AllowOverride` handling implemented, not run on a compromised Apache host |
-| Plesk | From documentation |
-| cPanel | From documentation |
+| Imunify360 | **Verified in the field** on the licensed product. Agent 8.11 as bundled by cPanel (the free ImunifyAV tier) lab-checked: its CLI and config output differ, and the scanner now says which product it found |
+| Apache | Lab-checked as Apache 2.4 on AlmaLinux 9 under Virtualmin, and as cPanel's EasyApache: web server detection, `AllowOverride`, per-site logs, and `--http` domains read from `<VirtualHost>` blocks. Not run on a compromised Apache host |
+| Plesk | Lab-checked on Plesk Obsidian 18.0.82 (vendor container image, services started by hand, no systemd): panel detection, document roots read from the panel database, scheduled tasks, the nginx-in-front-of-Apache stack and per-site logs. That run found four defects, all of the "empty section reads as clean" kind. Not run on a compromised Plesk host |
+| cPanel | Lab-checked on cPanel & WHM 138 (Ubuntu 24.04, real install, trial licence, one account with a subdomain and addon domains): panel detection, document roots read from `/var/cpanel/userdata` including an addon domain outside `public_html`, user crontabs, EasyApache paths and `AllowOverride`, PHP binaries, login logs, and the monthly `.gz` archives cPanel moves access logs into. Fixtures were synthetic; not run on a compromised cPanel host |
 | nginx | From documentation |
 | LiteSpeed Enterprise | From documentation — the edition split matters and the script refuses to guess it |
-| CyberPanel, Virtualmin | Log paths only |
-| Debian / Ubuntu | From documentation |
+| CyberPanel | Lab-checked on CyberPanel 3.0 with OpenLiteSpeed 2.5.7 (Ubuntu 24.04, real install, one site with a child domain): panel detection, document roots, user crontabs, per-site access logs, Pure-FTPd logins read from `/var/log/syslog`, and `--http` domains read from the OpenLiteSpeed vhost configs. That run found three defects: no panel label, an FTP daemon reported as absent while running, and `--http` fetching nothing. Fixtures were synthetic; not run on a compromised CyberPanel host |
+| Virtualmin | Lab-checked on Virtualmin 8.3 GPL (AlmaLinux 9.7, LAMP, ProFTPD, one virtual server with a sub-server) with `tools/lab-check.sh`: 10/10. That run found three defects: no panel label, `--http` unable to name the main site, and ProFTPD logins through PAM matched by neither FTP check. Fixtures were synthetic; not run on a compromised Virtualmin host |
+| Debian / Ubuntu | Scanner and both self-checks run in CI and on one real Ubuntu 24.04 host with no panel; package and log paths from documentation, not run on a compromised host |
 
 Two features have never been exercised against a real compromise: `--http` (black-box fetch
 and cloaking diff) and `--checksums` (WordPress package verification). The second is,
 structurally, the strongest check in the toolkit, because it asks whether files match what
 upstream shipped rather than whether they resemble something previously described.
 
+Both have now been run in a lab, on a WordPress 7.1 site under cPanel with deliberate, harmless
+changes. `--checksums` reported a modified core file, a file added to core, a modified plugin
+file and a file added to a plugin. `--http` reported a script tag served only to a mobile agent
+arriving from a search engine — after a fix, because until then it derived the domain from a
+DirectAdmin-style path and silently fetched nothing on any other panel. Neither result says
+how they fare against an attacker who is trying to defeat them.
+
 ---
 
 ## Next
 
 Ordered by how much each reduces the chance of a report being quietly wrong.
-
-**A signature test runner.** `CONTRIBUTING.md` asks contributors to re-test the pattern set in
-both directions, and then offers no way to do it. The corpus that produced the 16/16 and 0/12
-figures exists only as ad-hoc commands. A `tools/test-signatures.sh` with checked-in synthetic
-fixtures would make that instruction executable and make pattern contributions safe to accept.
-This ranks first because every defect found in this toolkit so far was found by testing, and
-two of them were pattern bugs that failed silently.
 
 **Joomla integrity verification.** WordPress has `wp core verify-checksums` and
 `wp plugin verify-checksums`, and they are the only checks that reliably find a family nobody

@@ -14,51 +14,81 @@ viết theo tài liệu nhà cung cấp**. Cả hai đều được phát hành;
 
 Scanner có 20 section và **chỉ đọc** theo thiết kế —
 [tools/verify-readonly.sh](../../tools/verify-readonly.sh) chứng minh điều đó bằng thực nghiệm
-thay vì khẳng định suông. Tài liệu duy trì song song tiếng Anh và tiếng Việt.
+thay vì khẳng định suông. [tools/test-signatures.sh](../../tools/test-signatures.sh) làm điều
+tương tự cho bộ pattern. Tài liệu duy trì song song tiếng Anh và tiếng Việt.
 
 ### Khả năng phát hiện, và cách đo
 
 | Lớp | Kết quả | Cách đo |
 |---|---|---|
-| Signature webshell | 16/16 phát hiện, 0/12 báo nhầm | 16 dạng shell thật, đối chứng bằng 12 mẫu code sạch chọn đúng những cấu trúc mà pattern viết vội hay báo nhầm |
+| Bộ mã độc công khai | **483/710 (68%)** bị các mục xét theo nội dung phát hiện; riêng signature 373/710 (53%) | 710 mẫu PHP không trùng từ bốn bộ sưu tập công khai — JohnTroony/php-webshells 52/65, bartblaze/PHP-backdoors (thu từ site bị chiếm) 110/177, nikicat/web-malware-collection 120/161, thư mục `php/` của tennc/webshell 201/307. Lấy các file chứa mã PHP, loại trùng theo sha256, quét bằng `--root` theo lô 80 file để giới hạn dòng của mỗi mục không che mất kết quả. Chỉ tính mục 6, 7, 16 và 17; không tính các mục liệt kê file vì lý do khác. Trước đợt này: 455/710 |
+| Bộ code sạch công khai | **0 báo nhầm signature** trên ~33.700 file PHP; các mục heuristic 7, 16, 17 nêu tên 90, 47 và 39 file để người xem xét (khoảng 0,5%) | WordPress core kèm 12 plugin phổ biến (WooCommerce, Elementor, Jetpack, Wordfence, Yoast, UpdraftPlus, WP File Manager và các plugin khác), Joomla 6.2, Drupal 11.4, quét nguyên cấu trúc thư mục thật. Trước đợt này signature báo nhầm 8 file trong số đó |
+| Signature webshell, thực tế | 16/16 phát hiện, 0/12 báo nhầm | 16 dạng shell thật, đối chứng bằng 12 mẫu code sạch chọn đúng những cấu trúc mà pattern viết vội hay báo nhầm. Là phép đo một lần trên mẫu sống, **không** chạy lại được từ repo này |
+| Bộ mẫu hồi quy cho signature | 22/22 phát hiện, 0/24 báo nhầm, 21/21 pattern có mẫu, 2/2 mẫu mục 7 được report nêu tên | `tools/test-signatures.sh`, commit kèm và chạy lại được: mỗi pattern một fixture tổng hợp, cộng các mẫu code sạch đối chứng — có một mẫu cho mỗi lỗi báo nhầm mà bộ code sạch làm lộ ra. Đã kiểm là nó **thất bại đúng lúc cần** — pattern hỏng cú pháp, pattern bị xoá, pattern quá tham, và report rỗng |
 | Chống dọn + inject client-side | 5/5 phát hiện, 0/7 báo nhầm | Mẫu lấy từ một vụ xâm nhập thật, gồm loader dùng XOR key lặp |
 | Ngưỡng phát hiện tổng quát | Phân biệt rõ | Đo thật: payload độc có chuỗi base64 **56.030** ký tự, icon nhúng hợp lệ **1.467** |
 | Đảm bảo chỉ đọc | PASS | Chạy trọn 20 section trên cây thử; sha256, quyền và danh sách file giống hệt trước/sau |
+
+Các dòng này **không** nói cùng một điều. Hai dòng bộ mẫu công khai là phép đo duy nhất trên một
+lượng lớn mã độc thật và code sạch thật, và đó là con số trung thực nhất: khoảng một phần ba
+webshell công khai lọt qua mọi kiểm tra theo nội dung. Trong 255 mẫu mà bộ pattern cũ bỏ sót, 61
+mẫu không đọc input nào và không gọi hàm kiểu eval hay exec nào — là file include, mảnh code và
+file cấu hình trong bộ sưu tập chứ không phải shell — nên tỉ lệ sót trên shell thật thấp hơn con
+số thô, nhưng không đủ thấp để coi signature là đủ. Đó là lý do toolkit còn dựa vào đối chiếu
+package (`--checksums`) và baseline lúc sạch, hai cách không cần nhận ra mã độc. Dòng thực tế là
+kết quả mã độc của một vụ thật, một lần; dòng hồi quy là thứ ai cũng chạy lại được sau khi sửa
+pattern. Các bộ mẫu không nằm trong repo này, vì repo không chứa mã độc; nguồn và phương pháp ở
+trên đủ để dựng lại.
+
+Cả hai bài tự kiểm chạy trong [CI](../../.github/workflows/tests.yml) ở mỗi lần push và mỗi
+pull request: trên runner Ubuntu với quyền root, và trong container CentOS 7, AlmaLinux 8 và 9,
+Debian 12, Ubuntu 24.04. Đó là nơi lớp đầu-cuối của bài test signature — lớp chạy scanner rồi
+đọc ngược report — lần đầu chạy với chính `webshell-triage.sh` thay vì một scanner giả sinh ra
+report. Trên cả sáu môi trường, scanner chạy trọn 20 section và report gọi tên đủ mọi fixture.
+
+Điều một lần chạy xanh **không** chứng minh, nói rõ đúng tinh thần của tài liệu này: bất cứ thứ
+gì liên quan tới control panel. Không runner nào cài DirectAdmin, Plesk hay cPanel, nên CI chỉ
+kiểm scanner trên hệ điều hành, bash và grep đó với một webroot tổng hợp, và không nói gì về
+việc nhận diện panel, crontab theo user hay đường dẫn log của panel. Bảng bên dưới không đổi vì
+nó. Phần kiểm chứng thực tế đứng sau bảng đó đến từ một host production mà nhóm duy trì không
+còn quyền truy cập, nên các dòng ấy là ghi nhận về thứ đã quan sát được, không phải thứ được
+kiểm lại sau mỗi thay đổi.
 
 ### Phạm vi nền tảng
 
 | Stack | Trạng thái |
 |---|---|
-| CentOS 7 / dòng RHEL | **Đã kiểm chứng thực tế** |
+| CentOS 7 / dòng RHEL | **Đã kiểm chứng thực tế** trên CentOS 7; máy lab AlmaLinux 9.7 (Virtualmin); AlmaLinux 8 mới chỉ trong CI |
 | DirectAdmin | **Đã kiểm chứng thực tế** |
 | OpenLiteSpeed | **Đã kiểm chứng thực tế** — gồm cả việc `.htaccess` bị bỏ qua trong im lặng |
 | ProFTPD | **Đã kiểm chứng thực tế** |
-| Imunify360 | **Đã kiểm chứng thực tế** |
-| Apache | Một phần — đã xử lý đường dẫn và `AllowOverride`, chưa chạy trên host Apache bị chiếm |
-| Plesk | Theo tài liệu |
-| cPanel | Theo tài liệu |
+| Imunify360 | **Đã kiểm chứng thực tế** trên bản có license. Agent 8.11 do cPanel cài kèm (bản miễn phí ImunifyAV) đã kiểm trong lab: CLI và định dạng config khác, và scanner giờ nói rõ nó gặp sản phẩm nào |
+| Apache | Đã kiểm trong lab với Apache 2.4 trên AlmaLinux 9 dưới Virtualmin, và với EasyApache của cPanel: nhận diện web server, `AllowOverride`, log theo site, và tên miền cho `--http` đọc từ các khối `<VirtualHost>`. Chưa chạy trên host Apache bị chiếm |
+| Plesk | Đã kiểm trong lab trên Plesk Obsidian 18.0.82 (image container của hãng, service khởi động tay, không có systemd): nhận diện panel, document root đọc từ database của panel, scheduled task, mô hình nginx đứng trước Apache và log theo từng site. Lần chạy đó tìm ra bốn lỗi, đều thuộc loại "section rỗng trông như sạch". Chưa chạy trên host Plesk bị chiếm |
+| cPanel | Đã kiểm trong lab trên cPanel & WHM 138 (Ubuntu 24.04, cài thật, license trial, một account có subdomain và addon domain): nhận diện panel, document root đọc từ `/var/cpanel/userdata` kể cả addon domain nằm ngoài `public_html`, crontab theo user, đường dẫn EasyApache và `AllowOverride`, PHP binary, log đăng nhập, và các file `.gz` theo tháng mà cPanel dồn access log vào. Mẫu thử là tổng hợp; chưa chạy trên host cPanel bị chiếm |
 | nginx | Theo tài liệu |
 | LiteSpeed Enterprise | Theo tài liệu — phân biệt edition rất quan trọng, và script **từ chối đoán** |
-| CyberPanel, Virtualmin | Chỉ mới có đường dẫn log |
-| Debian / Ubuntu | Theo tài liệu |
+| CyberPanel | Đã kiểm trong lab trên CyberPanel 3.0 với OpenLiteSpeed 2.5.7 (Ubuntu 24.04, cài thật, một site có child domain): nhận diện panel, document root, crontab theo user, access log theo site, đăng nhập Pure-FTPd đọc từ `/var/log/syslog`, và tên miền cho `--http` đọc từ cấu hình vhost của OpenLiteSpeed. Lần chạy đó tìm ra ba lỗi: không nhận ra panel, báo không có FTP trong khi FTP đang chạy, và `--http` không tải site nào. Mẫu thử là tổng hợp; chưa chạy trên host CyberPanel bị chiếm |
+| Virtualmin | Đã kiểm trong lab trên Virtualmin 8.3 GPL (AlmaLinux 9.7, LAMP, ProFTPD, một virtual server có sub-server) bằng `tools/lab-check.sh`: 10/10. Lần chạy đó tìm ra ba lỗi: không nhận ra panel, `--http` không biết tên miền của site chính, và đăng nhập ProFTPD qua PAM không khớp mẫu FTP nào. Mẫu thử là tổng hợp; chưa chạy trên host Virtualmin bị chiếm |
+| Debian / Ubuntu | Scanner và cả hai bài tự kiểm chạy trong CI và trên một host Ubuntu 24.04 thật không có panel; đường dẫn package và log viết theo tài liệu, chưa chạy trên host bị chiếm |
 
 Hai tính năng **chưa từng dùng** trên sự cố thật: `--http` (fetch black-box và so sánh
 cloaking) và `--checksums` (đối chiếu package WordPress). Cái thứ hai xét về cấu trúc là check
 mạnh nhất trong toàn bộ toolkit, vì nó hỏi file có khớp bản upstream phát hành hay không, chứ
 không hỏi nó có giống thứ ai đó từng mô tả hay không.
 
+Cả hai giờ đã chạy trong lab, trên một site WordPress 7.1 dưới cPanel với các thay đổi cố ý và
+vô hại. `--checksums` báo đúng một file core bị sửa, một file thêm vào core, một file plugin bị
+sửa và một file thêm vào plugin. `--http` báo đúng một thẻ script chỉ phục vụ cho thiết bị di
+động đến từ công cụ tìm kiếm — sau khi sửa, vì trước đó nó suy ra tên miền từ đường dẫn kiểu
+DirectAdmin và lặng lẽ không fetch gì trên mọi panel khác. Không kết quả nào nói lên chúng sẽ
+ra sao trước một kẻ tấn công đang cố vượt qua chúng.
+
 ---
 
 ## Sắp làm
 
 Xếp theo mức giảm rủi ro report bị sai trong im lặng.
-
-**Bộ chạy test cho signature.** `CONTRIBUTING.md` yêu cầu người đóng góp test lại bộ pattern
-theo cả hai chiều, rồi không cung cấp cách nào để làm. Bộ mẫu tạo ra con số 16/16 và 0/12 hiện
-chỉ tồn tại dưới dạng lệnh chạy tay. Một `tools/test-signatures.sh` với fixture tổng hợp được
-commit kèm sẽ biến yêu cầu đó thành thứ chạy được, và làm việc nhận PR về pattern trở nên an
-toàn. Xếp đầu vì **mọi defect tìm ra trong toolkit này đều do test mà ra**, và hai trong số đó
-là lỗi pattern thất bại trong im lặng.
 
 **Kiểm toàn vẹn cho Joomla.** WordPress có `wp core verify-checksums` và
 `wp plugin verify-checksums` — đó là check duy nhất tìm được họ mã độc chưa ai mô tả. Joomla

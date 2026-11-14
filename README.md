@@ -1,5 +1,7 @@
 # Web Server Incident Response Toolkit
 
+[![tests](https://github.com/davidthuong/webserver-ir-toolkit/actions/workflows/tests.yml/badge.svg)](https://github.com/davidthuong/webserver-ir-toolkit/actions/workflows/tests.yml)
+
 Read-only triage tooling and field procedures for shared-hosting servers compromised by
 webshells — DirectAdmin, Plesk, cPanel, or no panel at all, across Apache, nginx,
 OpenLiteSpeed and LiteSpeed Enterprise.
@@ -164,23 +166,45 @@ core checksums.
 
 ## Signature reliability
 
-The 19 patterns were validated against 16 real webshell forms and 12 clean-code samples:
+Measured against public corpora — 710 webshells and backdoors from four public collections, and
+~33,700 PHP files of WordPress core with 12 popular plugins, Joomla and Drupal:
 
 | | |
 |---|---|
-| Detected | 16/16 |
-| False positives | 0/12 |
+| Malware detected by the content-based sections | 483/710 (68%) |
+| Of which by the 21 signatures alone | 373/710 (53%) |
+| Signature false positives on clean code | 0 |
+| Clean files named by heuristic sections, for review | about 0.5% |
 
-The clean-code controls are the constructs naive patterns trip on: `eval($template)`,
-`call_user_func($this->handler, $_POST['data'])`, short base64 icon payloads,
-`$wpdb->prepare(..., $_GET['id'])`, and `array_map` with a closure.
+Read the first line plainly: about a third of public webshells pass every content check. That is
+why `--checksums` (does each file match what the vendor shipped?) and a clean-time baseline matter
+more than any pattern. Method, per-source numbers and caveats: [ROADMAP.md](ROADMAP.md).
 
-Two-step shells that split a variable function across statements
-(`$f = $_POST['a']; $f($_POST['b']);`) are caught by requiring both halves in the same file
-rather than by a single-line pattern — which is what keeps the false positive count at zero.
+The clean corpus is what keeps the patterns honest. It exposed eight false positives in the
+previous set — `is_email(` read as `mail(`, `$this->_exec(` as `exec(`, a `TimeZoneHelper` class
+as the Zone-H defacement archive — each now fixed and pinned by a clean fixture in
+`tools/test-signatures.sh`.
 
-**If you change `$SIG`, re-run that check.** A pattern set that flags legitimate code gets
-ignored, and an ignored scanner is worse than none.
+Two-step shells that split the input and its use across statements
+(`$f = $_POST['a']; $f($_POST['b']);`, or `$c = $_POST['c']; system($c);`) are caught by
+requiring both halves in the same file rather than by a single-line pattern.
+
+**If you change `$SIG`, re-run that check** — it is one command, and it is checked in:
+
+```bash
+bash tools/test-signatures.sh            # patterns, plus the scanner end to end
+bash tools/test-signatures.sh --patterns-only   # off a Linux host
+```
+
+It reads the patterns out of `webshell-triage.sh` itself, so it cannot fall out of step with
+the code, and it tests both directions plus one thing neither direction covers: that the
+findings reach the **report file**. A pattern set that flags legitimate code gets ignored, and
+an ignored scanner is worse than none.
+
+To check the scanner on a real control panel rather than a synthetic tree, use
+`tools/lab-check.sh` on a **lab host** — it plants inert fixtures in one site, scans the whole
+host and checks the report found each one. It writes to a webroot, so never run it on a host
+you are investigating. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 

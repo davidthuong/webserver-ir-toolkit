@@ -144,6 +144,11 @@ if [ -x /usr/sbin/plesk ] || [ -x /usr/local/psa/bin/init_conf ] || [ -f /usr/lo
   PANELS+=("Plesk")
 fi
 [ -x /usr/local/cpanel/cpanel ] && PANELS+=("cPanel")
+# CyberPanel: the Django app plus its own web daemon, lscpd. Both are required,
+# so a CyberCP directory left behind by an uninstall does not count.
+[ -d /usr/local/CyberCP ] && [ -x /usr/local/lscp/bin/lscpd ] && PANELS+=("CyberPanel")
+# Virtualmin: the CLI plus the Webmin module that holds its domain records.
+[ -x /usr/sbin/virtualmin ] && [ -d /etc/webmin/virtual-server ] && PANELS+=("Virtualmin")
 
 case "${#PANELS[@]}" in
   0) log "panel detected: unknown -- no panel binary found" ;;
@@ -158,7 +163,8 @@ esac
 
 sub "panel evidence on disk (so a wrong label above is debuggable)"
 for p in /usr/local/directadmin/directadmin /usr/sbin/plesk /usr/local/psa/version \
-         /usr/local/psa /opt/psa /usr/local/cpanel/cpanel /usr/local/cpanel; do
+         /usr/local/psa /opt/psa /usr/local/cpanel/cpanel /usr/local/cpanel \
+         /usr/local/CyberCP /usr/local/lscp/bin/lscpd /usr/sbin/virtualmin /etc/webmin/virtual-server; do
   [ -e "$p" ] && log "  present: $p"
 done
 
@@ -167,6 +173,11 @@ done
 have plesk && log "Plesk version: $(plesk version 2>/dev/null | head -3)"
 [ -x /usr/local/cpanel/cpanel ] && \
   log "cPanel version: $(/usr/local/cpanel/cpanel -V 2>/dev/null | head -1)"
+[ -f /usr/local/CyberCP/version.txt ] && \
+  log "CyberPanel version: $(head -c 200 /usr/local/CyberCP/version.txt 2>/dev/null)"
+for m in /usr/libexec/webmin/virtual-server/module.info /usr/share/webmin/virtual-server/module.info; do
+  [ -f "$m" ] && { log "Virtualmin version: $(sed -n 's/^version=//p' "$m" | head -1)"; break; }
+done
 
 ROOTS=()
 add_root() { [ -d "$1" ] && ROOTS+=("$1"); }
@@ -187,14 +198,53 @@ else
   for d in /var/www/vhosts/*/httpdocs /var/www/vhosts/*/*/httpdocs /var/www/vhosts/*/subdomains/*; do
     add_root "$d"
   done
-  # generic
-  for d in /var/www/html /var/www /usr/share/nginx/html /srv/www /opt/lampp/htdocs; do
+  # cPanel keeps one file per domain under /var/cpanel/userdata/<user>/, each
+  # naming its document root. An addon domain's root may sit beside public_html
+  # rather than inside it, where the /home/*/public_html pattern cannot see it.
+  # Checked on cPanel 138 with an addon domain created at /home/<user>/addon2.test.
+  # It only ever adds directories that exist.
+  if [ -d /var/cpanel/userdata ]; then
+    while IFS= read -r d; do
+      case "$d" in /*) add_root "$d" ;; esac
+    done < <(grep -rhs '^documentroot:' /var/cpanel/userdata/ 2>/dev/null \
+               | sed 's/^documentroot:[[:space:]]*//' | sort -u)
+  fi
+  # Plesk records every document root, and that record is the only complete
+  # list: a subdomain or additional domain gets a directory named by whoever
+  # created it (observed on Plesk 18: <subscription>/site1), which no glob can
+  # anticipate. The globs above stay as the fallback for when the database
+  # cannot be read -- which is exactly when a panel is most likely to be broken.
+  if have plesk; then
+    PLESK_ROOTS=$(plesk db -Ne "SELECT www_root FROM hosting" 2>/dev/null) || PLESK_ROOTS=""
+    if [ -n "$PLESK_ROOTS" ]; then
+      while IFS= read -r d; do
+        case "$d" in /*) add_root "$d" ;; esac
+      done <<< "$PLESK_ROOTS"
+    else
+      log "!! could not read document roots from the Plesk database; using path"
+      log "!! patterns only. Subdomains outside httpdocs/ may NOT be scanned."
+    fi
+    add_root /var/www/vhosts/default/htdocs
+  fi
+  # generic. On a Plesk host /var/www is not a webroot but the parent of every
+  # subscription plus the panel's own state (vhosts/system, vhosts/chroot):
+  # scanning it reads each site twice and reports the panel's files as findings.
+  if [ -d /var/www/vhosts ]; then
+    add_root /var/www/html
+  else
+    for d in /var/www/html /var/www; do add_root "$d"; done
+  fi
+  for d in /usr/share/nginx/html /srv/www /opt/lampp/htdocs; do
     add_root "$d"
   done
 fi
 
-# de-duplicate, drop nested duplicates of /var/www when vhosts exist
-mapfile -t ROOTS < <(printf '%s\n' "${ROOTS[@]:-}" | awk 'NF' | sort -u)
+# De-duplicate, and drop any root that lies inside another root: the parent
+# already covers it, and scanning both prints every finding twice and doubles
+# the I/O. Sorted in the C locale so a parent always precedes its children.
+mapfile -t ROOTS < <(printf '%s\n' "${ROOTS[@]:-}" | awk 'NF' | sed 's:/*$::' \
+  | LC_ALL=C sort -u | awk '{ for (i = 1; i <= n; i++) if (index($0, keep[i] "/") == 1) next
+                             keep[++n] = $0; print }')
 if [ "${#ROOTS[@]}" -eq 0 ]; then
   log "!! no webroot found -- pass one with --root /path"
 else
@@ -235,6 +285,13 @@ if [ -d /usr/local/lsws ]; then
   log "litespeed version string: ${lsver:-<unreadable>}"
 elif have nginx && { systemctl is-active nginx >/dev/null 2>&1 || pgrep -x nginx >/dev/null 2>&1; }; then
   WEBSRV="nginx"
+  # nginx holding 80/443 does not mean nginx serves the site. Plesk's default
+  # stack is nginx in front of Apache on 127.0.0.1:7080/7081, with every request
+  # proxied through -- and there .htaccess IS read. Calling that host "nginx"
+  # told the responder that the one mitigation that works does not.
+  if pgrep -x apache2 >/dev/null 2>&1 || pgrep -x httpd >/dev/null 2>&1; then
+    WEBSRV="nginx + Apache (proxy)"
+  fi
 elif have httpd || have apache2; then
   WEBSRV="Apache"
 fi
@@ -291,11 +348,32 @@ case "$HTACCESS" in
     log "  !! See docs: MITIGATION.md (section 16 covers client-side injection)"
     ;;
   yes*)
+    if [ "$WEBSRV" = "nginx + Apache (proxy)" ]; then
+      log "  nginx and Apache are both running. .htaccess is read only for requests"
+      log "  nginx hands to Apache -- it may serve static files itself, and a site"
+      log "  whose PHP is passed straight to PHP-FPM by nginx bypasses it entirely."
+      log "  Test the rule with curl against a .php AND a static file before relying on it."
+      # Plesk writes one nginx config per site, so the exceptions can be named.
+      if [ -d /var/www/vhosts/system ]; then
+        sub "Plesk sites where nginx does NOT hand PHP to Apache (.htaccess not consulted)"
+        for f in /var/www/vhosts/system/*/conf/nginx.conf; do
+          [ -f "$f" ] || continue
+          site=${f#/var/www/vhosts/system/}; site=${site%%/*}
+          if grep -q 'fastcgi_pass' "$f" 2>/dev/null; then
+            log "  $site  -- PHP served by nginx via FPM"
+          elif ! grep -qE 'proxy_pass[^;]*:708[01]' "$f" 2>/dev/null; then
+            log "  $site  -- no proxy to Apache found (nginx-only hosting?)"
+          fi
+        done
+      fi
+    fi
     log "  AllowOverride must include AuthConfig or Limit for 'Require' to work;"
     log "  if it does not, Apache returns 500 for the whole directory."
     sub "AllowOverride in effect"
     grep -rhs 'AllowOverride' /etc/httpd/conf/httpd.conf /etc/apache2/apache2.conf \
-      /usr/local/directadmin/data/users/*/httpd.conf /etc/httpd/conf.d/ 2>/dev/null \
+      /etc/apache2/conf/httpd.conf \
+      /usr/local/directadmin/data/users/*/httpd.conf /etc/httpd/conf.d/ \
+      /etc/apache2/plesk.conf.d/server.conf /var/www/vhosts/system/*/conf/httpd.conf 2>/dev/null \
       | sort -u | head -10 | cap
     ;;
 esac
@@ -310,7 +388,16 @@ for p in /usr/local/lsws/lsphp*/bin/php /opt/plesk/php/*/bin/php \
          /opt/alt/php*/usr/bin/php /usr/bin/php /usr/local/bin/php; do
   [ -x "$p" ] || continue
   phpfound=$((phpfound+1))
-  ver=$("$p" -r 'echo PHP_VERSION;' 2>/dev/null || echo '?')
+  # Not every "php" is the CLI. On cPanel /usr/bin/php is a wrapper around
+  # php-cgi, which has no -r: it prints its whole usage screen and exits 0, and
+  # that screen went into the report as the version. Accept only something
+  # shaped like a version, and fall back to the banner line of -v.
+  ver=$("$p" -r 'echo PHP_VERSION;' 2>/dev/null | head -n 1)
+  case "$ver" in
+    [0-9]*.[0-9]*) ;;
+    *) ver=$("$p" -v 2>/dev/null | sed -n '1s/^PHP \([0-9][0-9.]*\).*/\1/p') ;;
+  esac
+  ver=${ver:-?}
   ext=$("$p" -m 2>/dev/null | grep -iE 'imunify|snuffleupagus|suhosin' | tr '\n' ',' )
   if [ -n "$ext" ]; then
     log "  OK      $p  (php $ver)  ext: ${ext%,}"
@@ -396,7 +483,16 @@ if [ -d /usr/local/directadmin/data/users ]; then
 fi
 if have plesk; then
   sub "Plesk scheduled tasks"
-  plesk db -Ne "SELECT id,type,command,active FROM ScheduledTasks" 2>/dev/null | cap
+  # The column list is tried first and SELECT * second, and a failure of both
+  # is printed rather than swallowed. This query named a column that does not
+  # exist (`active`; it is `isActive` on Plesk 18), so with stderr discarded
+  # the section was empty on every Plesk host -- which reads as "no tasks".
+  if   pt=$(plesk db -Ne "SELECT id,sysUserLogin,isActive,type,command,arguments FROM ScheduledTasks" 2>&1); then :
+  elif pt=$(plesk db -Ne "SELECT * FROM ScheduledTasks" 2>&1); then :
+  else
+    log "  !! could not read ScheduledTasks -- this check did NOT run. Plesk said:"
+  fi
+  [ -n "$pt" ] && printf '%s\n' "$pt" | cap
 fi
 
 sub "systemd units modified in last ${DAYS}d"
@@ -441,21 +537,56 @@ if have imunify360-agent; then
   log "imunify360 installed"
   log "version:  $(imunify360-agent version 2>&1 | head -3)"
   sub "license"
-  imunify360-agent register --status 2>&1 | head -10 | cap
+  # `register --status` does not exist on agent 8.x; rstatus does, and its JSON
+  # form says which product this actually is. That matters more than it sounds:
+  # cPanel ships the free ImunifyAV under this same binary name.
+  imunify360-agent rstatus 2>&1 | head -3 | cap
+  IMLIC=$(imunify360-agent rstatus --json 2>/dev/null \
+          | grep -oE '"(license_type|id|expiration)": *[^,}]*' | sort -u)
+  [ -n "$IMLIC" ] && printf '%s\n' "$IMLIC" | sed 's/^/  /' | cap
+  case "$IMLIC" in
+    *[iI]munifyAV*)
+      log "  !! This is ImunifyAV, not Imunify360. The free edition scans and reports;"
+      log "  !! it has no Proactive Defense, no WAF and no automatic cleanup. A host"
+      log "  !! that \"has Imunify\" in this form was never being protected in real time."
+      ;;
+  esac
   sub "malicious files Imunify already knows about"
   imunify360-agent malware malicious list --limit 100 2>&1 | head -60 | cap
   sub "on-demand scan history"
   imunify360-agent malware on-demand list 2>&1 | head -20 | cap
   sub "KEY SETTINGS -- these decide whether it actually blocks anything"
-  imunify360-agent config show 2>/dev/null \
-    | grep -iE -A4 'PROACTIVE_DEFENSE|MALWARE_SCANNING|WEBSHIELD|enable_scan_inotify|mode|try_restore' \
-    | head -60 | cap
+  # Agent 8.x prints the whole configuration as ONE line of JSON, so a line-based
+  # grep with context returned all of it. Pull the settings out by name instead;
+  # older agents print multi-line YAML and keep the original treatment.
+  # The key is spelled PROACTIVE_DEFENCE. Matching DEFENSE finds nothing.
+  IMCFG=$(imunify360-agent config show 2>/dev/null)
+  case "$IMCFG" in
+    "{"*)
+      printf '%s\n' "$IMCFG" \
+        | grep -oE '"(PROACTIVE_DEFENCE|WEBSHIELD|MALWARE_CLEANUP)": *\{[^}]*\}|"(enable_scan_inotify|default_action|ruleset)": *[^,}]*' \
+        | sed 's/^/  /' | cap
+      ;;
+    *)
+      printf '%s\n' "$IMCFG" \
+        | grep -iE -A4 'PROACTIVE_DEFEN[CS]E|MALWARE_SCANNING|WEBSHIELD|enable_scan_inotify|mode|try_restore' \
+        | head -60 | cap
+      ;;
+  esac
   log ""
-  log "  -> PROACTIVE_DEFENSE mode must be 'kill', not 'log' or 'disabled'"
+  log "  -> PROACTIVE_DEFENCE mode must be 'KILL', not 'LOG' or 'DISABLED'"
+  log "     (no \"mode\" shown at all means the feature is not in this licence)"
   log "  -> MALWARE_SCANNING enable_scan_inotify must be true (real-time on upload)"
   log "  -> WEBSHIELD enable must be true"
   sub "agent health"
-  imunify360-agent doctor 2>&1 | tail -15 | cap
+  # Deliberately NOT `imunify360-agent doctor`: it collects a diagnostic bundle
+  # and uploads it to the vendor, then prints a key to quote to support. A
+  # read-only triage tool has no business sending host data anywhere, least of
+  # all mid-incident. Service state answers the question this section asks.
+  for u in imunify360 imunify360-agent imunify-antivirus imunify360-webshield; do
+    s=$(systemctl is-active "$u" 2>/dev/null) || true
+    [ -n "${s:-}" ] && [ "$s" != "unknown" ] && log "  $u = $s"
+  done
 else
   log "imunify360-agent NOT found in PATH"
 fi
@@ -469,25 +600,27 @@ sec "6. WEBSHELL SIGNATURE SCAN"
 SIG="$WORK/sig"
 : > "$SIG" || exit 1
 cat > "$SIG" <<'PATTERNS'
-eval[[:space:]]*\([[:space:]]*(base64_decode|gzinflate|gzuncompress|gzdecode|str_rot13|strrev|pack|hex2bin|convert_uudecode|urldecode)
+eval[[:space:]]*\([[:space:]]*(['"]\?>['"][[:space:]]*\.[[:space:]]*)?(base64_decode|gzinflate|gzuncompress|gzdecode|str_rot13|strrev|pack|hex2bin|convert_uudecode|urldecode)
 (eval|assert|create_function)[[:space:]]*\([^)]{0,120}\$_(GET|POST|REQUEST|COOKIE|SERVER|FILES)
 (call_user_func|call_user_func_array|array_map|usort|register_tick_function)[[:space:]]*\([[:space:]]*\$_(GET|POST|REQUEST|COOKIE)
-(system|shell_exec|passthru|popen|proc_open|pcntl_exec|exec)[[:space:]]*\([[:space:]]*(\$_(GET|POST|REQUEST|COOKIE)|\$[a-zA-Z_]+[[:space:]]*\.)
+(^|[^a-zA-Z0-9_>:$])(system|shell_exec|passthru|popen|proc_open|pcntl_exec|exec)[[:space:]]*\([[:space:]]*(\$_(GET|POST|REQUEST|COOKIE)|\$[a-zA-Z_]+[[:space:]]*\.)
 \$_(GET|POST|REQUEST|COOKIE)[[:space:]]*\[[^]]*\][[:space:]]*\(
-preg_replace[[:space:]]*\([[:space:]]*['"][^'"]*/[a-zA-Z]*e[a-zA-Z]*['"]
+preg_replace[[:space:]]*\([[:space:]]*['"](/[^'"]*/|#[^'"]*#)[imsxuADSUXJ]*e[imsxuADSUXJ]*['"]
 base64_decode[[:space:]]*\([[:space:]]*['"][A-Za-z0-9+/=]{120,}
-(gzinflate|gzuncompress|str_rot13)[[:space:]]*\([[:space:]]*base64_decode
+(gzinflate|gzuncompress|str_rot13)[[:space:]]*\([[:space:]]*base64_decode[[:space:]]*\([[:space:]]*['"][A-Za-z0-9+/=]{40,}
 \$\{[[:space:]]*['"]_(GET|POST|REQUEST|COOKIE)
 \$GLOBALS[[:space:]]*\[[[:space:]]*['"][^'"]{1,20}['"][[:space:]]*\][[:space:]]*\(
-(chr[[:space:]]*\([0-9]+\)[[:space:]]*\.[[:space:]]*){4,}
-FilesMan|WSOsetcookie|wso_|b374k|r57shell|c99shell|c100shell|IndoXploit|alfashell|ALFA_DATA|AnonymousFox|priv8|Marijuana|MiniShell|Zone-?H|Sh3ll|by\.?Orb|xIndoShell|GhostShell
-(passthru|shell_exec|system)[[:space:]]*\([[:space:]]*['"](wget|curl|python|perl|chmod|nc)[[:space:]]
+(chr[[:space:]]*\([[:space:]]*(6[5-9]|[7-9][0-9]|1[01][0-9]|12[0-2])[[:space:]]*\)[[:space:]]*\.[[:space:]]*){4,}
+FilesMan|WSOsetcookie|wso_|b374k|r57shell|c99shell|c100shell|IndoXploit|alfashell|ALFA_DATA|AnonymousFox|priv8|Marijuana|MiniShell|Zone-H([^a-zA-Z]|$)|zone-h\.org|Sh3ll|by\.?Orb|xIndoShell|GhostShell
+(^|[^a-zA-Z0-9_>:$])(passthru|shell_exec|system)[[:space:]]*\([[:space:]]*['"](wget|curl|python|perl|chmod|nc)[[:space:]]
 move_uploaded_file[[:space:]]*\([[:space:]]*\$_FILES[^;]*\$_(GET|POST|REQUEST)
 php://input.*eval|eval.*php://input
 (fsockopen|pfsockopen)[[:space:]]*\(.*(4444|1337|31337|9001)
-mail[[:space:]]*\(.*\$_(GET|POST|REQUEST).*\$_(GET|POST|REQUEST)
-str_replace[[:space:]]*\([^)]*\)[[:space:]]*\([[:space:]]*['"]?\$
+(^|[^a-zA-Z0-9_>:$])mail[[:space:]]*\(.*\$_(GET|POST|REQUEST).*\$_(GET|POST|REQUEST)
+str_replace[[:space:]]*\([^()]*\)[[:space:]]*\([[:space:]]*['"]?\$
 @?(ini_set|error_reporting)[[:space:]]*\([[:space:]]*['"]?(display_errors|0)['"]?[[:space:]]*,?[[:space:]]*(0|false|off)?[[:space:]]*\)[[:space:]]*;[[:space:]]*@?set_time_limit
+(=|echo|print|return|\()[[:space:]]*`[^`]*\$_(GET|POST|REQUEST|COOKIE)
+move_uploaded_file[[:space:]]*\([^;]*\$_FILES[^;]*\[[[:space:]]*['"]name['"][[:space:]]*\][[:space:]]*\)
 PATTERNS
 
 SCAN_INC=(--include='*.php' --include='*.php[0-9]' --include='*.phtml' --include='*.pht'
@@ -537,6 +670,49 @@ if [ "${#ROOTS[@]}" -gt 0 ]; then
     | while IFS= read -r f; do
         grep -qE '\$[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*\([[:space:]]*\$' "$f" 2>/dev/null && echo "$f"
       done | sort -u | cap
+fi
+
+sub "two-step command execution: \$v = ..\$_POST.. then system(\$v) or \`\$v\`  -- split-up shells"
+# The largest group the signatures missed on a public corpus of 710 webshells
+# and backdoors: the command arrives in one statement and runs in another --
+#   $c = isset($_POST['c']) ? $_POST['c'] : '';   echo shell_exec($c);   `$c`
+# Same principle as the check above: neither half alone, both in one file.
+# Measured on that corpus and on ~33,700 clean PHP files (WordPress core with
+# 12 popular plugins, Joomla 6, Drupal 11): 70 shells matched; of the 622 clean
+# files that assign from a superglobal, 0. An earlier version also counted
+# backticks anywhere and flagged 33 WordPress core files, whose docblocks
+# write `$action` in markdown style -- hence the expression-position rule.
+# One awk process per batch of files, never one per file.
+if [ "${#ROOTS[@]}" -gt 0 ]; then
+  grep -rlE '\$[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*=[^=;][^;]*\$_(GET|POST|REQUEST|COOKIE)' \
+    --include='*.php' "${ROOTS[@]}" 2>/dev/null \
+    | LC_ALL=C xargs -d '\n' -r awk '
+        function flush(  u) {
+          if (cur != "") for (u in use) if (u in src) { print cur; break }
+          split("", src); split("", use); cur = FILENAME
+        }
+        FNR == 1 { flush() }
+        {
+          line = $0
+          while (match(line, /\$[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=[^=;][^;]*\$_(GET|POST|REQUEST|COOKIE)/)) {
+            v = substr(line, RSTART, RLENGTH); sub(/[[:space:]]*=.*/, "", v); src[v] = 1
+            line = substr(line, RSTART + RLENGTH)
+          }
+          line = $0
+          while (match(line, /(system|passthru|shell_exec|exec|popen|proc_open|pcntl_exec)[[:space:]]*\([[:space:]]*\$[A-Za-z_][A-Za-z0-9_]*/)) {
+            pre = (RSTART > 1) ? substr(line, RSTART - 1, 1) : ""
+            if (pre !~ /[A-Za-z0-9_>:$]/) { u = substr(line, RSTART, RLENGTH); sub(/^[^$]*/, "", u); use[u] = 1 }
+            line = substr(line, RSTART + RLENGTH)
+          }
+          line = $0
+          # a backtick only where an expression can start: WordPress docblocks
+          # write `$action` in markdown style, and those are not commands
+          while (match(line, /(=|echo|print|return|\()[[:space:]]*`[[:space:]]*\$[A-Za-z_][A-Za-z0-9_]*/)) {
+            u = substr(line, RSTART, RLENGTH); sub(/^[^$]*/, "", u); use[u] = 1
+            line = substr(line, RSTART + RLENGTH)
+          }
+        }
+        END { flush() }' 2>/dev/null | sort -u | art | cap
 fi
 
 sub "PHP files with almost no whitespace / high symbol density"
@@ -643,6 +819,7 @@ find /home /var/qmail/mailnames /var/qmail/control -maxdepth 4 -name '.forward' 
 # -----------------------------------------------------------------------------
 sec "14. ENTRY-POINT HINTS FROM ACCESS LOGS"
 LOGS=()
+SEENLOGS=""
 for g in /var/log/httpd/domains/*.log \
          /var/log/apache2/*access*log /var/log/apache2/domlogs/* \
          /var/log/nginx/*access*log \
@@ -651,42 +828,73 @@ for g in /var/log/httpd/domains/*.log \
          /usr/local/lsws/logs/*access*log /usr/local/lsws/logs/*/*access*log \
          /home/*/logs/*access*log /home/*/logs/*/*access*log \
          /var/log/virtualmin/*access_log; do
-  [ -f "$g" ] && LOGS+=("$g")
+  [ -f "$g" ] || continue
+  # cPanel keeps byte counters and FTP transfer offsets beside the access logs.
+  case "$g" in *-bytes_log|*ftpxferlog*) continue ;; esac
+  # The same directory is often reachable by several of the paths above -- on
+  # cPanel all three domlogs paths are one directory behind symlinks -- and a
+  # log read three times prints every request three times.
+  rp=$(readlink -f "$g" 2>/dev/null); rp=${rp:-$g}
+  case "$SEENLOGS" in *"|$rp|"*) continue ;; esac
+  SEENLOGS="$SEENLOGS|$rp|"
+  LOGS+=("$g")
 done
-log "access logs found: ${#LOGS[@]}"
-if [ "${#LOGS[@]}" -eq 0 ]; then
+# Compressed history. cPanel's log processor empties the live domlog and files
+# the requests away as /home/<user>/logs/<domain>-<Mon>-<Year>.gz -- observed
+# within a minute of the request on cPanel 138 -- so on that panel the live logs
+# hold almost nothing and the evidence is all in the archives. Rotated nginx
+# and Apache logs are the same story one logrotate cycle later.
+ZLOGS=()
+for g in /home/*/logs/*.gz /var/log/nginx/*access*log*.gz \
+         /var/log/apache2/*access*log*.gz /var/log/httpd/*access*log*.gz; do
+  [ -f "$g" ] || continue
+  case "$g" in *.tar.gz|*-bytes_log*) continue ;; esac
+  ZLOGS+=("$g")
+done
+# One grep over all plain logs and one zgrep over all archives: two processes
+# per question, however many logs there are.
+lgrep() {
+  [ "${#LOGS[@]}" -gt 0 ] && grep "$@" "${LOGS[@]}" 2>/dev/null
+  [ "${#ZLOGS[@]}" -gt 0 ] && have zgrep && zgrep "$@" "${ZLOGS[@]}" 2>/dev/null
+  return 0
+}
+NLOGS=$(( ${#LOGS[@]} + ${#ZLOGS[@]} ))
+log "access logs found: ${#LOGS[@]} live, ${#ZLOGS[@]} compressed"
+[ "${#ZLOGS[@]}" -gt 0 ] && ! have zgrep && \
+  log "!! zgrep is not installed -- the compressed logs were NOT searched"
+if [ "$NLOGS" -eq 0 ]; then
   log "!! none found -- locate them manually, then re-run with the path:"
   log "     ss -ltnp | grep -E ':(80|443)'   then check that server's config"
   log "   LiteSpeed/OpenLiteSpeed default: /usr/local/lsws/logs/"
   log "   CyberPanel: /home/<domain>/logs/    Virtualmin: /var/log/virtualmin/"
 fi
-if [ "${#LOGS[@]}" -gt 0 ]; then
+if [ "$NLOGS" -gt 0 ]; then
   sub "POST requests to PHP inside upload/cache dirs (shell being driven)"
-  grep -hE '"POST [^"]*(upload|uploads|images|cache|tmp|assets|media)/[^"]*\.php' "${LOGS[@]}" 2>/dev/null \
+  lgrep -hE '"POST [^"]*(upload|uploads|images|cache|tmp|assets|media)/[^"]*\.php' \
     | tail -60 | cap
   sub "requests to any file flagged in section 6"
   if [ -s "$CAND" ]; then
     while IFS= read -r f; do
       b=$(basename "$f")
       case "$b" in *.php|*.phtml|*.phar) ;; *) continue ;; esac
-      hits=$(grep -hF "/$b" "${LOGS[@]}" 2>/dev/null | tail -5)
+      hits=$(lgrep -hF "/$b" | tail -5)
       [ -n "$hits" ] && { log ">>> $b"; printf '%s\n' "$hits" | cut -c1-220 | tee -a "$OUT"; }
     done < <(head -40 "$CAND")
   fi
   sub "common exploit probes (LFI/RCE/upload)"
-  grep -hoiE '(\.\./\.\./|/wp-content/plugins/[a-z0-9_-]+/[^ "]*\.php\?|xmlrpc\.php|/wp-json/wp/v2/users|eval\(|base64_|union[+ ]select|/vendor/phpunit|think\\\\app|/cgi-bin/)' \
-    "${LOGS[@]}" 2>/dev/null | sort | uniq -c | sort -rn | head -25 | cap
+  lgrep -hoiE '(\.\./\.\./|/wp-content/plugins/[a-z0-9_-]+/[^ "]*\.php\?|xmlrpc\.php|/wp-json/wp/v2/users|eval\(|base64_|union[+ ]select|/vendor/phpunit|think\\\\app|/cgi-bin/)' \
+    | sort | uniq -c | sort -rn | head -25 | cap
 
   sub "CMS component/plugin task endpoints in the query string"
   # Joomla and WordPress route exploits through option=/task=/action= parameters.
   # Anything here with a 500 usually means the component EXISTS and is reachable
   # -- a 404 means it is not installed on that vhost.
-  grep -hoiE 'option=com_[a-z0-9_]+&[a-z]*task=[a-z0-9_.]+|action=[a-z0-9_]*upload[a-z0-9_]*' \
-    "${LOGS[@]}" 2>/dev/null | sort | uniq -c | sort -rn | head -25 | cap
+  lgrep -hoiE 'option=com_[a-z0-9_]+&[a-z]*task=[a-z0-9_.]+|action=[a-z0-9_]*upload[a-z0-9_]*' \
+    | sort | uniq -c | sort -rn | head -25 | cap
 
   sub "status codes returned to those endpoint probes"
-  grep -hoiE '"(GET|POST) [^"]*(option=com_[a-z0-9_]+|task=[a-z0-9_.]*upload[a-z0-9_.]*)[^"]*" [0-9]{3}' \
-    "${LOGS[@]}" 2>/dev/null | grep -oE '[0-9]{3}$' | sort | uniq -c | sort -rn | head | cap
+  lgrep -hoiE '"(GET|POST) [^"]*(option=com_[a-z0-9_]+|task=[a-z0-9_.]*upload[a-z0-9_.]*)[^"]*" [0-9]{3}' \
+    | grep -oE '[0-9]{3}$' | sort | uniq -c | sort -rn | head | cap
 
   log ""
   log "  !! IMPORTANT -- a quiet result here does NOT mean no exploitation."
@@ -699,26 +907,50 @@ fi
 sub "panel + FTP + SSH login activity"
 grep -hiE 'fail|invalid|error' /var/log/directadmin/*.log 2>/dev/null | tail -20 | cap
 grep -hiE 'authentication|login' /var/log/plesk/panel.log 2>/dev/null | tail -20 | cap
+grep -hE 'FAILED LOGIN' /usr/local/cpanel/logs/login_log 2>/dev/null | tail -20 | cap
 grep -hE 'Accepted (password|publickey)' /var/log/secure /var/log/auth.log 2>/dev/null | tail -25 | cap
 # Match both FTP daemons. pure-ftpd writes "OK LOGIN", proftpd writes
 # "Login successful", and they log to different files -- so a check written for
 # one of them reports nothing on a host running the other, which reads exactly
 # like a host with no FTP activity. Report which daemon is actually running so
 # an empty result can be told apart from an unsupported log format.
+#
+# Detected by running process, not by unit name. Debian and Ubuntu ship Pure-FTPd
+# as pure-ftpd-mysql / -postgresql / -ldap, whose unit and process names do not
+# match "pure-ftpd" -- so a CyberPanel host with FTP running reported "none".
+# The unit is no better a witness: on that host pure-ftpd-mysql.service read
+# "active (exited)" while the daemon had died at startup. Pure-FTPd's process
+# title is "pure-ftpd (SERVER)" whatever the package is called.
 FTPD="none detected"
-for u in proftpd pure-ftpd vsftpd; do
-  systemctl is-active "$u" >/dev/null 2>&1 && FTPD="$u"
-done
-[ "$FTPD" = "none detected" ] && pgrep -x proftpd >/dev/null 2>&1 && FTPD="proftpd"
-[ "$FTPD" = "none detected" ] && pgrep -x pure-ftpd >/dev/null 2>&1 && FTPD="pure-ftpd"
+if   pgrep -x proftpd >/dev/null 2>&1;     then FTPD="proftpd"
+elif pgrep -f '^pure-ftpd' >/dev/null 2>&1; then FTPD="pure-ftpd"
+elif pgrep -x vsftpd >/dev/null 2>&1;      then FTPD="vsftpd"
+fi
 log "  FTP daemon: $FTPD"
-grep -rhiE 'OK LOGIN|Login successful' \
-  /var/log/pureftpd.log /var/log/xferlog /var/log/proftpd/ /var/log/messages \
-  /var/log/secure 2>/dev/null | tail -25 | cap
+# FTP daemons log to their own file on some systems and to the general system
+# log on others: /var/log/messages or /var/log/secure on RHEL, /var/log/syslog
+# on Debian and Ubuntu, which was not read at all. General logs are filtered to
+# FTP daemon lines first, so an SMTP "SASL authentication failed" is not
+# counted as an FTP brute force.
+ftplines() {
+  grep -rhs '' /var/log/pureftpd.log /var/log/xferlog /var/log/proftpd/ 2>/dev/null
+  grep -hsE 'pure-ftpd|proftpd|vsftpd' /var/log/messages /var/log/secure /var/log/syslog 2>/dev/null
+  return 0
+}
+# Formats observed on real hosts, not assumed: Pure-FTPd writes "is now logged
+# in" (Ubuntu 24.04). ProFTPD authenticating through PAM on RHEL writes only
+# pam_unix lines -- "session opened for user" and "authentication failure" --
+# and with neither pattern present, both checks were silent on a Virtualmin
+# host with ProFTPD (AlmaLinux 9). "Login successful" is ProFTPD's own wording.
+ftplines | grep -iE 'OK LOGIN|Login successful|is now logged in|session opened for user' | tail -25 | cap
 sub "FTP login FAILURES -- brute force against panel FTP accounts"
-grep -rhiE 'authentication failed|Login failed|no such user' \
-  /var/log/pureftpd.log /var/log/proftpd/ /var/log/messages 2>/dev/null \
-  | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort | uniq -c | sort -rn | head -15 | cap
+# One source per line: Pure-FTPd writes the client as "(user@host)", proftpd as
+# "host (1.2.3.4[1.2.3.4])". Taking every IP on the line counted proftpd twice,
+# and a client shown by hostname was not counted at all.
+ftplines | grep -iE 'authentication failed|authentication failure|Login failed|no such user' \
+  | awk '{ if (match($0, /@[^) ]+\)/)) { print substr($0, RSTART + 1, RLENGTH - 2); next }
+           if (match($0, /[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/)) print substr($0, RSTART, RLENGTH) }' \
+  | sort | uniq -c | sort -rn | head -15 | cap
 sub "log files that were truncated or deleted (anti-forensics)"
 find /var/log -maxdepth 2 -type f -size 0 -mtime -"$DAYS" 2>/dev/null | cap
 
@@ -942,17 +1174,19 @@ if [ "${#ROOTS[@]}" -gt 0 ]; then
       #
       # Dropping to the directory owner grants the code only the privilege it
       # already had, so there is nothing to escalate.
+      # echo, not log, inside this loop: it is piped through cap, which already
+      # writes to the report, so log recorded each of these lines twice.
       owner=$(stat -c '%U' "$r" 2>/dev/null)
-      log "  --- $r   (as ${owner:-root})"
+      echo "  --- $r   (as ${owner:-root})"
       if [ -n "${owner:-}" ] && [ "$owner" != "root" ] && have sudo; then
         sudo -u "$owner" -- wp --path="$r" --skip-plugins --skip-themes \
           core verify-checksums 2>&1 | head -25 | sed 's/^/    /'
         sudo -u "$owner" -- wp --path="$r" --skip-plugins --skip-themes \
           plugin verify-checksums --all 2>&1 | head -40 | sed 's/^/    /'
       else
-        log "    !! cannot drop privileges (owner='${owner:-?}', sudo present=$(have sudo && echo yes || echo no))."
-        log "    !! SKIPPED rather than run wp-cli as root against a suspect site."
-        log "    !! Run it manually as that user:  sudo -u <user> wp --path=$r core verify-checksums"
+        echo "    !! cannot drop privileges (owner='${owner:-?}', sudo present=$(have sudo && echo yes || echo no))."
+        echo "    !! SKIPPED rather than run wp-cli as root against a suspect site."
+        echo "    !! Run it manually as that user:  sudo -u <user> wp --path=$r core verify-checksums"
       fi
     done | cap
   elif have wp; then
@@ -995,21 +1229,107 @@ if [ "${#ROOTS[@]}" -gt 0 ]; then
     # commonly appear only for a search-engine referrer or a mobile agent, and
     # never for a logged-in administrator -- so two requests are compared.
     UA_M='Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15'
+    # Which domain a webroot answers to. Only DirectAdmin puts the domain in the
+    # path; cPanel and Plesk record it, so ask them. This used to derive the
+    # domain from the path alone, which meant that on every panel except
+    # DirectAdmin the loop skipped each root and the section printed nothing --
+    # indistinguishable from "fetched every site and found them clean".
+    DOMMAP="$WORK/dommap"          # lines of: <document root><TAB><domain>
+    : > "$DOMMAP"
+    for f in /var/cpanel/userdata/*/*; do
+      [ -f "$f" ] || continue
+      case "$f" in *.cache|*.json|*.yaml|*_SSL|*/main) continue ;; esac
+      dr=$(sed -n 's/^documentroot:[[:space:]]*//p' "$f" 2>/dev/null | head -n 1)
+      sn=$(sed -n 's/^servername:[[:space:]]*//p' "$f" 2>/dev/null | head -n 1)
+      [ -n "$dr" ] && [ -n "$sn" ] && printf '%s\t%s\n' "$dr" "$sn" >> "$DOMMAP"
+    done
+    if have plesk; then
+      plesk db -Ne "SELECT h.www_root, d.name FROM hosting h JOIN domains d ON d.id = h.dom_id" \
+        2>/dev/null >> "$DOMMAP"
+    fi
+    # Apache virtual hosts: ServerName and DocumentRoot inside each
+    # <VirtualHost> block. This covers any Apache host, panel or not --
+    # Virtualmin writes its vhosts straight into httpd.conf, and before this a
+    # Virtualmin site whose root carries no domain name was never fetched.
+    # Checked on Virtualmin 8.3 / AlmaLinux 9. A ServerName with a port has it
+    # stripped; quoted roots are unquoted. Missing config files are skipped.
+    awk 'tolower($1) == "<virtualhost" { inv = 1; sn = ""; dr = ""; next }
+         inv && tolower($1) == "servername"   { sn = $2 }
+         inv && tolower($1) == "documentroot" { dr = $2 }
+         tolower($1) == "</virtualhost>" {
+           if (sn != "" && dr != "") { gsub(/"/, "", dr); sub(/\/$/, "", dr); sub(/:[0-9]+$/, "", sn)
+                                       print dr "\t" sn }
+           inv = 0 }' \
+      /etc/httpd/conf/httpd.conf /etc/httpd/conf.d/*.conf \
+      /etc/apache2/apache2.conf /etc/apache2/sites-enabled/* \
+      /etc/apache2/conf/httpd.conf /usr/local/apache/conf/httpd.conf 2>/dev/null >> "$DOMMAP"
+
+    # OpenLiteSpeed -- CyberPanel, or OLS on its own -- declares each virtual
+    # host in httpd_config.conf (name, vhRoot) and its docRoot in a per-vhost
+    # file, both written in terms of $VH_NAME / $VH_ROOT. Checked on CyberPanel
+    # 3.0, including a child domain whose docRoot sits inside its parent's.
+    OLSCONF=/usr/local/lsws/conf/httpd_config.conf
+    if [ -f "$OLSCONF" ]; then
+      for vc in /usr/local/lsws/conf/vhosts/*/vhost.conf; do
+        [ -f "$vc" ] || continue
+        vn=$(basename "$(dirname "$vc")")
+        vr=$(awk -v n="$vn" 'tolower($1) == "virtualhost" { f = ($2 == n) }
+                             f && $1 == "vhRoot" { print $2; exit }' "$OLSCONF")
+        vr=${vr//\$VH_NAME/$vn}
+        [ -z "$vr" ] && vr="/home/$vn"
+        case "$vr" in /*) ;; *) vr="/usr/local/lsws/$vr" ;; esac
+        dr=$(awk '$1 == "docRoot" { print $2; exit }' "$vc")
+        dr=${dr//\$VH_ROOT/$vr}; dr=${dr//\$VH_NAME/$vn}
+        dr=$(printf '%s' "$dr" | tr -s '/' | sed 's:/$::')
+        dm=$(awk '$1 == "vhDomain" { print $2; exit }' "$vc")
+        dm=${dm//\$VH_NAME/$vn}; dm=${dm%%,*}
+        [ -z "$dm" ] && dm=$vn
+        [ -n "$dr" ] && printf '%s\t%s\n' "$dr" "$dm" >> "$DOMMAP"
+      done
+    fi
     for r in "${ROOTS[@]}"; do
       dom=$(printf '%s\n' "$r" | sed -n 's|^/home/[^/]*/domains/\([^/]*\)/.*|\1|p')
-      [ -z "$dom" ] && continue
-      A="$WORK/fetch_a" ; B="$WORK/fetch_b"
-      curl -sL --max-time 20 "https://$dom/" -o "$A" 2>/dev/null
-      curl -sL --max-time 20 -A "$UA_M" -e 'https://www.google.com/' "https://$dom/" -o "$B" 2>/dev/null
-      if [ -s "$A" ] || [ -s "$B" ]; then
-        d=$(diff <(grep -oE '<script[^>]*>' "$A" 2>/dev/null | sort -u) \
-                 <(grep -oE '<script[^>]*>' "$B" 2>/dev/null | sort -u) 2>/dev/null)
-        [ -n "$d" ] && { log "  CLOAKING DIFFERENCE  $dom"; printf '%s\n' "$d" | sed 's/^/    /' | cap; }
-        for pat in 'atob(' 'fromCharCode' 'documentElement.appendChild' 'navigator.clipboard'; do
-          grep -qF "$pat" "$A" 2>/dev/null && log "  $dom  serves: $pat"
-          grep -qF "$pat" "$B" 2>/dev/null && log "  $dom  serves (mobile/referrer): $pat"
-        done
+      [ -n "$dom" ] && printf '%s\t%s\n' "$r" "$dom" >> "$DOMMAP"
+    done
+
+    # Inside this loop use echo, not log: the whole loop is piped through cap,
+    # which already writes to the report, so log would record every line twice.
+    # Every domain whose document root lies at or under a scanned root is
+    # fetched. Matching the root exactly missed subdomains and child domains:
+    # their roots sit inside the parent's, so they are not scanned roots of
+    # their own, yet each is a separate site that can serve its own injection.
+    for r in "${ROOTS[@]}"; do
+      doms=$(awk -F'\t' -v r="$r" '$1 == r || index($1, r "/") == 1 { print $2 }' "$DOMMAP" | sort -u)
+      if [ -z "$doms" ]; then
+        echo "  no domain known for $r -- NOT fetched"
+        continue
       fi
+      for dom in $doms; do
+        A="$WORK/fetch_a" ; B="$WORK/fetch_b"
+        : > "$A"; : > "$B"
+        # -k: a compromised site with an expired or self-signed certificate is
+        # still serving its visitors, and what it serves is the question here.
+        # Plain HTTP is tried when HTTPS gets no answer: a site without a
+        # certificate has no 443 listener at all on OpenLiteSpeed, and HTTPS
+        # only meant such a site was never checked.
+        for sch in https http; do
+          curl -skL --max-time 20 "$sch://$dom/" -o "$A" 2>/dev/null; rc_a=$?
+          curl -skL --max-time 20 -A "$UA_M" -e 'https://www.google.com/' "$sch://$dom/" -o "$B" 2>/dev/null
+          { [ -s "$A" ] || [ -s "$B" ]; } && break
+        done
+        if [ -s "$A" ] || [ -s "$B" ]; then
+          echo "  fetched $sch://$dom/  (plain: $(wc -c < "$A" | tr -d ' ') bytes, mobile+referrer: $(wc -c < "$B" | tr -d ' ') bytes)"
+          d=$(diff <(grep -oE '<script[^>]*>' "$A" 2>/dev/null | sort -u) \
+                   <(grep -oE '<script[^>]*>' "$B" 2>/dev/null | sort -u) 2>/dev/null)
+          [ -n "$d" ] && { echo "  CLOAKING DIFFERENCE  $dom"; printf '%s\n' "$d" | sed 's/^/    /'; }
+          for pat in 'atob(' 'fromCharCode' 'documentElement.appendChild' 'navigator.clipboard'; do
+            grep -qF "$pat" "$A" 2>/dev/null && echo "  $dom  serves: $pat"
+            grep -qF "$pat" "$B" 2>/dev/null && echo "  $dom  serves (mobile/referrer): $pat"
+          done
+        else
+          echo "  $dom  could NOT be fetched (curl exit $rc_a) -- nothing was checked for this site"
+        fi
+      done
     done | cap
   else
     sub "black-box fetch  [SKIPPED -- pass --http to enable]"
@@ -1044,7 +1364,8 @@ sort -u "$ARTIFACTS" 2>/dev/null | grep -E '^/'   | grep -vF -e "$WORK" -e "$OUT
 # Signature hits belong in the same picture.
 [ -s "$CAND" ] && cat "$CAND" >> "$ALL"
 sort -u "$ALL" -o "$ALL" 2>/dev/null
-NART=$(grep -c . "$ALL" 2>/dev/null || echo 0)
+# grep -c prints 0 AND exits 1 on no match, so `|| echo 0` yields two lines
+NART=$(grep -c . "$ALL" 2>/dev/null); NART=${NART:-0}
 
 log ""
 log "== AFFECTED ACCOUNTS =========================================="
@@ -1060,6 +1381,7 @@ if [ "${NART:-0}" -gt 0 ]; then
   sed -E -e 's|.*/home/([^/]+)/domains/.*|\1|' \
          -e 's|.*/home/([^/]+)/public_html.*|\1|' \
          -e 's|^/var/www/vhosts/([^/]+)/.*|\1|' \
+         -e 's|^/home/([^/]+)/.*|\1|' \
          -e 's|^/([^/]+)/.*|/\1|' "$ALL" \
     | sort | uniq -c | sort -rn \
     | awk '{printf "  %-5s %s\n", $1, $2}' | cap
@@ -1093,7 +1415,7 @@ if [ "${NART:-0}" -gt 0 ]; then
     log "  not the date of entry. Emptied files keep the mtime they were emptied at,"
     log "  and anything the attacker removed leaves no timestamp at all."
     log ""
-    NTL=$(grep -c . "$TL" 2>/dev/null || echo 0)
+    NTL=$(grep -c . "$TL" 2>/dev/null); NTL=${NTL:-0}
     if [ "${NTL:-0}" -le 24 ]; then
       # head -12 and tail -12 overlap below 24 entries, which reprints the oldest
       # rows under a "newest" heading and makes the timeline read as nonsense.

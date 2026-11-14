@@ -84,7 +84,9 @@ version đã có extension.
 Agent vẫn sống, dashboard vẫn hiện, nhưng database signature đứng yên từ ngày hết hạn.
 
 ```bash
-imunify360-agent register --status
+imunify360-agent rstatus --json      # agent 8.x; bản cũ hơn: register --status
+                                     # "license_type": "imunifyAV" là bản miễn phí --
+                                     # chỉ quét và báo cáo, không chặn, không tự dọn
 imunify360-agent version
 ls -la /var/imunify360/                     # xem file signature update lần cuối lúc nào
 ```
@@ -212,7 +214,7 @@ imunify360-agent malware on-demand start --path /home               # DirectAdmi
 imunify360-agent malware on-demand status
 
 # sức khoẻ agent
-imunify360-agent doctor
+imunify360-agent doctor              # LƯU Ý: lệnh này gửi gói chẩn đoán về hãng
 ```
 
 > Cú pháp CLI có thay đổi giữa các version. Nếu lệnh nào báo lỗi:
@@ -234,7 +236,7 @@ webroot xong, cron vẫn tải shell về lại sau 10 phút. **Chạy cả hai.
 ## Checklist
 
 ```
-[ ] PROACTIVE_DEFENSE mode = kill (không phải log/disabled)
+[ ] PROACTIVE_DEFENCE mode = KILL (không phải LOG/DISABLED)
 [ ] Extension imunify load cho TẤT CẢ PHP version đang dùng
 [ ] License còn hạn, signature update gần đây
 [ ] Ignore list không chứa webroot

@@ -46,24 +46,65 @@ bit and directory entry, runs the scanner against that tree alone, and diffs.
 | 1 | fail — a file that existed before the scan is gone; the guarantee is broken |
 | 2 | inconclusive — the environment interfered, so the run proved nothing either way |
 
-Run it on a server, not a workstation. Endpoint antivirus quarantines the deliberately
+Both this check and the signature test below run in CI on every pull request, across six
+Linux environments — see [.github/workflows/tests.yml](.github/workflows/tests.yml). If you have
+no Linux host, push to a fork and read the result there. Exit 2 fails the job on purpose.
+
+To run it yourself, use a server, not a workstation. Endpoint antivirus quarantines the deliberately
 malware-shaped files the test creates, and a file your AV removed looks exactly like one the
 scanner removed — which is why the script tracks paths that were already unreadable before the
 scan started and excludes them from the verdict instead of reporting a false failure.
 
-**Signature changes must be tested both ways.** If you touch the `$SIG` heredoc, verify
-against real shell forms *and* against clean code:
+**Signature changes must be tested both ways.** If you touch the `$SIG` heredoc, run:
 
 ```bash
-# extract the pattern set
-sed -n '/^cat > "\$SIG" <<.PATTERNS.$/,/^PATTERNS$/p' webshell-triage.sh | sed '1d;$d' > /tmp/sig.txt
-
-# then check both directions
-printf '%s\n' '<?php eval($compiled_template); ?>' | grep -qEf /tmp/sig.txt && echo "FALSE POSITIVE"
+bash tools/test-signatures.sh            # on a Linux host: both layers
+bash tools/test-signatures.sh --patterns-only   # anywhere else: patterns only
 ```
+
+It extracts the patterns from `webshell-triage.sh` itself rather than keeping a copy, so it
+cannot drift away from the code it tests. It checks three things a pattern set gets wrong:
+
+| Check | Why it is there |
+|---|---|
+| every pattern compiles | a malformed bracket expression makes `grep` exit 2, and the scanner suppresses stderr — a broken pattern reads as a clean result |
+| shell forms are detected | the direction everyone tests |
+| clean code is not flagged | the direction that decides whether the section gets read at all |
+
+It then plants the same fixtures in a throwaway webroot, runs the real scanner over it, and
+checks that the **report file** names them — because the patterns matching and the report
+saying so are two different claims, and the second one was false for weeks without anyone
+noticing.
+
+| Exit | Meaning |
+|---|---|
+| 0 | pass |
+| 1 | fail — a miss, a false positive, or a pattern that does not compile |
+| 2 | inconclusive — patterns could not be extracted, or the scanner could not be run here |
+
+**A new pattern needs a new fixture.** The script warns about any pattern no fixture
+exercises; an untested pattern is a claim, not a check. Add a minimal synthetic reproduction
+next to the others — something with the property the pattern looks for, that is not itself a
+working shell. Never commit real malware.
 
 State the results in the PR: how many shell forms detected, how many clean samples flagged.
 A pattern that adds one detection and two false positives is a regression.
+
+**Changes that touch panel paths need a real panel.** CI runs on a synthetic tree, so it
+cannot see a document root the scanner never finds, a log it never opens or a domain it never
+fetches — and every such defect leaves a section empty, which reads as clean. If you change
+how the scanner finds roots, logs, crontabs, FTP or domains, run this on a lab host with that
+panel installed and at least one site:
+
+```bash
+bash tools/lab-check.sh --lab --root <site document root> --domain <site> --log <its access log>
+```
+
+It plants inert fixtures in that site (each PHP file starts with `exit;`; the cron line is
+scheduled for 31 February), runs the scanner over the whole host, checks the report names each
+one in the section that should catch it, and removes what it planted. **It writes to a
+webroot: lab hosts only, never a host under investigation.** State in the PR which panel and
+version it passed on.
 
 **Portability.** Target `bash` 4.2 and GNU coreutils as shipped on RHEL 7 — that is the oldest
 system people are still running this on. No `bash` 5 syntax, no `grep -P`, no GNU-only flags

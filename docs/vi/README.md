@@ -1,5 +1,7 @@
 # Bộ công cụ xử lý sự cố web server
 
+[![tests](https://github.com/davidthuong/webserver-ir-toolkit/actions/workflows/tests.yml/badge.svg)](https://github.com/davidthuong/webserver-ir-toolkit/actions/workflows/tests.yml)
+
 Công cụ triage **chỉ đọc** và quy trình xử lý cho server shared hosting bị webshell —
 DirectAdmin, Plesk, cPanel hoặc không panel, trên Apache, nginx, OpenLiteSpeed và
 LiteSpeed Enterprise.
@@ -159,23 +161,44 @@ WordPress.
 
 ## Độ tin cậy của signature
 
-Bộ 19 pattern được kiểm bằng 16 dạng webshell thật và 12 mẫu code sạch:
+Đo trên bộ mẫu công khai — 710 webshell và backdoor từ bốn bộ sưu tập công khai, và ~33.700 file
+PHP của WordPress core kèm 12 plugin phổ biến, Joomla và Drupal:
 
 | | |
 |---|---|
-| Phát hiện đúng | 16/16 |
-| Báo nhầm code sạch | 0/12 |
+| Mã độc bị các mục xét theo nội dung phát hiện | 483/710 (68%) |
+| Trong đó riêng 21 signature | 373/710 (53%) |
+| Signature báo nhầm code sạch | 0 |
+| File sạch bị mục heuristic nêu tên để xem xét | khoảng 0,5% |
 
-Mẫu đối chứng gồm đúng những cấu trúc mà pattern viết vội hay báo nhầm: `eval($template)`,
-`call_user_func($this->handler, $_POST['data'])`, base64 ngắn của icon,
-`$wpdb->prepare(..., $_GET['id'])`, và `array_map` với closure.
+Đọc thẳng dòng đầu: khoảng một phần ba webshell công khai lọt qua mọi kiểm tra theo nội dung. Vì
+vậy `--checksums` (file có khớp bản hãng phát hành không?) và baseline lúc sạch quan trọng hơn mọi
+pattern. Phương pháp, số liệu theo từng nguồn và giới hạn: [ROADMAP.md](ROADMAP.md).
 
-Shell chia 2 bước, tách variable function ra nhiều câu lệnh
-(`$f = $_POST['a']; $f($_POST['b']);`) được bắt bằng cách yêu cầu **cả hai** nửa cùng nằm trong
-một file, thay vì bằng pattern một dòng — chính điều đó giữ số false positive ở mức 0.
+Chính bộ code sạch giữ cho pattern trung thực. Nó làm lộ tám lỗi báo nhầm trong bộ cũ — `is_email(`
+bị đọc thành `mail(`, `$this->_exec(` thành `exec(`, class `TimeZoneHelper` thành trang lưu trữ
+deface Zone-H — mỗi lỗi đã sửa và có một mẫu sạch canh giữ trong `tools/test-signatures.sh`.
 
-**Sửa `$SIG` thì phải test lại cả hai chiều.** Bộ pattern báo nhầm code hợp lệ sẽ bị bỏ qua, và
-một scanner bị bỏ qua thì tệ hơn là không có.
+Shell chia 2 bước, tách input và chỗ dùng nó ra nhiều câu lệnh
+(`$f = $_POST['a']; $f($_POST['b']);`, hoặc `$c = $_POST['c']; system($c);`) được bắt bằng cách
+yêu cầu **cả hai** nửa cùng nằm trong một file, thay vì bằng pattern một dòng.
+
+**Sửa `$SIG` thì phải test lại cả hai chiều** — chỉ một lệnh, và đã có sẵn trong repo:
+
+```bash
+bash tools/test-signatures.sh            # pattern, cộng scanner chạy đầu-cuối
+bash tools/test-signatures.sh --patterns-only   # khi không ở trên host Linux
+```
+
+Nó đọc pattern trực tiếp từ `webshell-triage.sh` nên không thể lệch khỏi code nó đang kiểm, và
+nó test cả hai chiều cộng thêm một thứ mà không chiều nào phủ: phát hiện có **thật sự vào tới
+file report** hay không. Bộ pattern báo nhầm code hợp lệ sẽ bị bỏ qua, và một scanner bị bỏ qua
+thì tệ hơn là không có.
+
+Muốn kiểm scanner trên control panel thật thay vì cây thư mục tổng hợp, dùng `tools/lab-check.sh`
+trên **máy lab**: nó cắm mẫu thử vô hại vào một site, quét toàn máy và kiểm report có tìm thấy
+từng mẫu không. Script này **có ghi vào webroot**, nên tuyệt đối không chạy trên máy đang điều
+tra. Xem [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
 ---
 

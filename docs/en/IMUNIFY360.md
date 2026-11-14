@@ -91,7 +91,9 @@ The agent stays up and the dashboard renders, but the signature database froze o
 licence lapsed.
 
 ```bash
-imunify360-agent register --status
+imunify360-agent rstatus --json      # agent 8.x; older agents: register --status
+                                     # "license_type": "imunifyAV" is the free edition --
+                                     # it scans and reports, it does not block or clean
 imunify360-agent version
 ls -la /var/imunify360/            # when were signature files last written?
 ```

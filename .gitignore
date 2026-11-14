@@ -43,3 +43,7 @@ Thumbs.db
 desktop.ini
 *.swp
 *~
+
+# thông tin đăng nhập server lab -- repo này PUBLIC
+server.md
+server*.md
